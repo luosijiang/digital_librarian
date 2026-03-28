@@ -19,9 +19,9 @@ import llm
 app = FastAPI(title="Ultimate Digital Librarian")
 
 @app.get("/tts")
-async def tts_endpoint(text: str):
+async def tts_endpoint(text: str, rate: str = "+0%"):
     """
-    使用 Microsoft Edge TTS 生成高质量神经网络语音流
+    使用 Microsoft Edge TTS 生成高质量神经网络语音流，支持语速调节
     """
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
@@ -31,7 +31,7 @@ async def tts_endpoint(text: str):
     
     async def generate_audio():
         # zh-CN-XiaoxiaoNeural 是目前公认最好听的中文女声
-        communicate = edge_tts.Communicate(decoded_text, "zh-CN-XiaoxiaoNeural")
+        communicate = edge_tts.Communicate(decoded_text, "zh-CN-XiaoxiaoNeural", rate=rate)
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 yield chunk["data"]

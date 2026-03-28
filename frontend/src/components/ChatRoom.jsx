@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { motion } from 'framer-motion';
-import { LogOut, ArrowUp, Plus, MessageSquare, Trash2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { LogOut, ArrowUp, Plus, MessageSquare, Trash2, Menu, Settings, Check, X } from 'lucide-react';
 import { API_BASE } from '../api';
 import MessageList from './MessageList';
 import VoiceControl from './VoiceControl';
@@ -17,6 +17,9 @@ export default function ChatRoom({ token, onLogout }) {
   const [textInput, setTextInput] = useState("");
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [ttsRate, setTtsRate] = useState("+0%");
+  const [isRateMenuOpen, setIsRateMenuOpen] = useState(false);
 
   // 用 ref 持久持有 loading 和消息，避免切换 sidebar 时丢失
   const loadingRef = useRef(false);
@@ -26,6 +29,13 @@ export default function ChatRoom({ token, onLogout }) {
   const audioQueueRef = useRef([]);
   const audioRef = useRef(null);
   const sentenceBufferRef = useRef("");
+  const ttsRateRef = useRef("+0%");
+
+  const handleRateChange = (rate) => {
+    setTtsRate(rate);
+    ttsRateRef.current = rate;
+    setIsRateMenuOpen(false);
+  };
 
   // 同步 ref 和 state
   const setMessagesAndRef = useCallback((updater) => {
@@ -236,12 +246,25 @@ export default function ChatRoom({ token, onLogout }) {
     }
   };
 
-  const pushToAudioQueue = (rawText) => {
+  const pushToAudioQueue = async (rawText) => {
     const text = rawText.replace(/[#*`~>]/g, '').trim();
     if (!text) return;
-    audioQueueRef.current.push(text);
-    if (!isAudioPlaying && (audioRef.current && audioRef.current.paused)) {
-      playNextAudio();
+    
+    // Asynchronous Blob Prefetching
+    try {
+      const encodedText = encodeURIComponent(text);
+      const rate = ttsRateRef.current;
+      const res = await fetch(`${API_BASE}/tts?text=${encodedText}&rate=${encodeURIComponent(rate)}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        audioQueueRef.current.push(url);
+        if (!isAudioPlaying && (audioRef.current && audioRef.current.paused)) {
+          playNextAudio();
+        }
+      }
+    } catch (e) {
+      console.error("Prefetch TTS Error:", e);
     }
   };
 
@@ -250,10 +273,14 @@ export default function ChatRoom({ token, onLogout }) {
       setIsAudioPlaying(false);
       return;
     }
-    const text = audioQueueRef.current.shift();
+    const url = audioQueueRef.current.shift();
     if (audioRef.current) {
-      const encodedText = encodeURIComponent(text);
-      audioRef.current.src = `${API_BASE}/tts?text=${encodedText}`;
+      // Release old URL to avoid memory leak if it's a blob
+      if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      
+      audioRef.current.src = url;
       setIsAudioPlaying(true);
       
       const playPromise = audioRef.current.play();
@@ -304,76 +331,155 @@ export default function ChatRoom({ token, onLogout }) {
       className="w-full h-full flex overflow-hidden relative z-10 bg-white"
     >
       <audio ref={audioRef} onEnded={playNextAudio} className="hidden" />
-      {/* Left Sidebar */}
-      <div className="w-64 bg-[#F0F4F9]/60 border-r border-[#E1E5EA] flex-col flex-shrink-0 z-30 hidden md:flex h-full" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
-        <div className="px-4 pb-4">
-          <button
-            onClick={handleNewChat}
-            disabled={loading}
-            className={`w-full flex items-center justify-between px-4 py-3.5 bg-[#F0F4F9] text-[#1F1F1F] rounded-full border border-transparent transition-all ${loading ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white hover:shadow-sm hover:border-[#E1E5EA]'}`}
-          >
-            <span className="font-medium text-[14px]">新对话</span>
-            <Plus className="w-4 h-4 text-[#444746]" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-2 space-y-1">
-          <div className="px-4 pb-2 pt-4 text-[12px] font-medium text-[#444746]">近期记录</div>
-          {sessions.map(session => (
-            <div
-              key={session.session_id}
-              className={`group w-full flex items-center gap-1 px-1 py-0.5 rounded-full transition-colors ${
-                currentSessionId === session.session_id ? '' : ''
-              }`}
-            >
+      
+      {/* Sidebar Content Fragment */}
+      {(() => {
+        const SidebarContent = (
+          <>
+            <div className="px-4 pb-4">
               <button
-                onClick={() => handleSessionClick(session.session_id)}
+                onClick={() => { handleNewChat(); setIsSidebarOpen(false); }}
                 disabled={loading}
-                className={`flex-1 text-left flex items-center gap-3 px-3 py-2.5 rounded-full transition-colors min-w-0 ${
-                  currentSessionId === session.session_id
-                    ? 'bg-[#D3E3FD] text-[#041E49] font-medium'
-                    : loading ? 'text-[#444746] opacity-40 cursor-not-allowed' : 'text-[#444746] hover:bg-black/5'
-                }`}
+                className={`w-full flex items-center justify-between px-4 py-3.5 bg-[#F0F4F9] text-[#1F1F1F] rounded-full border border-transparent transition-all ${loading ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white hover:shadow-sm hover:border-[#E1E5EA]'}`}
               >
-                <MessageSquare className="w-[16px] h-[16px] flex-shrink-0 opacity-70" />
-                <span className="text-[13px] truncate flex-1">{session.title}</span>
-              </button>
-              <button
-                onClick={(e) => handleDeleteSession(e, session.session_id)}
-                disabled={loading}
-                className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-[#999] hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all duration-150"
-                title="删除此对话"
-              >
-                <Trash2 className="w-[14px] h-[14px]" />
+                <span className="font-medium text-[14px]">新对话</span>
+                <Plus className="w-4 h-4 text-[#444746]" />
               </button>
             </div>
-          ))}
-        </div>
 
-        <div className="p-4 border-t border-[#E1E5EA] bg-[#F0F4F9]/60">
-          <button onClick={onLogout} disabled={loading} className="w-full flex items-center gap-2 px-4 py-2 text-[#444746] hover:bg-black/5 rounded-full transition-colors">
-            <LogOut className="w-[18px] h-[18px]" />
-            <span className="text-[13px] font-medium">退出系统</span>
-          </button>
-        </div>
-      </div>
+            <div className="flex-1 overflow-y-auto px-2 space-y-1">
+              <div className="px-4 pb-2 pt-4 text-[12px] font-medium text-[#444746]">近期记录</div>
+              {sessions.map(session => (
+                <div
+                  key={session.session_id}
+                  className={`group w-full flex items-center gap-1 px-1 py-0.5 rounded-full transition-colors`}
+                >
+                  <button
+                    onClick={() => { handleSessionClick(session.session_id); setIsSidebarOpen(false); }}
+                    disabled={loading}
+                    className={`flex-1 text-left flex items-center gap-3 px-3 py-2.5 rounded-full transition-colors min-w-0 ${
+                      currentSessionId === session.session_id
+                        ? 'bg-[#D3E3FD] text-[#041E49] font-medium'
+                        : loading ? 'text-[#444746] opacity-40 cursor-not-allowed' : 'text-[#444746] hover:bg-black/5'
+                    }`}
+                  >
+                    <MessageSquare className="w-[16px] h-[16px] flex-shrink-0 opacity-70" />
+                    <span className="text-[13px] truncate flex-1">{session.title}</span>
+                  </button>
+                  <button
+                    onClick={(e) => handleDeleteSession(e, session.session_id)}
+                    disabled={loading}
+                    className="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-full text-[#999] hover:text-red-500 hover:bg-red-50 opacity-100 group-hover:opacity-100 md:opacity-0 transition-all duration-150"
+                    title="删除此对话"
+                  >
+                    <Trash2 className="w-[14px] h-[14px]" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 border-t border-[#E1E5EA] bg-[#F0F4F9]/60">
+              <button onClick={onLogout} disabled={loading} className="w-full flex items-center gap-2 px-4 py-2 text-[#444746] hover:bg-black/5 rounded-full transition-colors">
+                <LogOut className="w-[18px] h-[18px]" />
+                <span className="text-[13px] font-medium">退出系统</span>
+              </button>
+            </div>
+          </>
+        );
+
+        return (
+          <>
+            {/* Desktop Sidebar */}
+            <div className="w-64 bg-[#F0F4F9]/60 border-r border-[#E1E5EA] flex-col flex-shrink-0 z-30 hidden md:flex h-full" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
+              {SidebarContent}
+            </div>
+
+            {/* Mobile Sidebar Overlay */}
+            <AnimatePresence>
+              {isSidebarOpen && (
+                <div className="fixed inset-0 z-50 flex md:hidden">
+                  <motion.div 
+                    initial={{ opacity: 0 }} 
+                    animate={{ opacity: 1 }} 
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+                    onClick={() => setIsSidebarOpen(false)}
+                  />
+                  <motion.div
+                    initial={{ x: "-100%" }} 
+                    animate={{ x: 0 }} 
+                    exit={{ x: "-100%" }} 
+                    transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+                    className="relative w-72 max-w-[80vw] bg-[#F0F4F9] h-full flex flex-col shadow-2xl overflow-hidden"
+                    style={{ paddingTop: 'calc(1rem + var(--sat))', paddingBottom: 'calc(1rem + var(--sab))' }}
+                  >
+                    <div className="absolute top-4 right-4 z-10 mt-[var(--sat)]">
+                       <button onClick={() => setIsSidebarOpen(false)} className="p-2 bg-white rounded-full text-gray-500 shadow-sm"><X className="w-5 h-5"/></button>
+                    </div>
+                    {SidebarContent}
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+          </>
+        );
+      })()}
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col h-full relative overflow-hidden">
-        <div className="flex justify-between items-center px-6 py-4 bg-white/95 backdrop-blur-xl border-b border-[#F0F4F9] sticky top-0 z-20" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
+        <div className="flex justify-between items-center px-4 md:px-6 py-4 bg-white/95 backdrop-blur-xl border-b border-[#F0F4F9] sticky top-0 z-20" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
           <div className="flex items-center gap-2">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 text-xl font-semibold select-none">✨</span>
+            <button 
+              className="md:hidden p-2 -ml-2 text-[#444746] hover:bg-black/5 rounded-full transition-colors"
+              onClick={() => setIsSidebarOpen(true)}
+            >
+              <Menu className="w-[22px] h-[22px]" />
+            </button>
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 text-xl font-semibold select-none hidden sm:inline-block">✨</span>
             <h1 className="text-lg font-medium text-[#1F1F1F] tracking-tight">数字馆长模型</h1>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 md:gap-3">
             {loading && (
-              <div className="flex items-center gap-2 text-[#1A73E8] text-[13px] animate-pulse font-medium">
+              <div className="hidden sm:flex items-center gap-2 text-[#1A73E8] text-[13px] animate-pulse font-medium">
                 <span className="inline-block w-2 h-2 rounded-full bg-[#1A73E8] animate-bounce" style={{animationDelay:'0ms'}}></span>
                 <span className="inline-block w-2 h-2 rounded-full bg-[#9C27B0] animate-bounce" style={{animationDelay:'150ms'}}></span>
                 <span className="inline-block w-2 h-2 rounded-full bg-[#E91E63] animate-bounce" style={{animationDelay:'300ms'}}></span>
                 <span className="ml-1">推演中</span>
               </div>
             )}
+            
+            <div className="relative">
+              <button 
+                onClick={() => setIsRateMenuOpen(!isRateMenuOpen)}
+                className="w-9 h-9 flex items-center justify-center rounded-full text-[#444746] hover:bg-black/5 transition-colors"
+                title="语速设置"
+              >
+                <Settings className="w-[18px] h-[18px]" />
+              </button>
+              
+              <AnimatePresence>
+                {isRateMenuOpen && (
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                    className="absolute right-0 top-[120%] w-36 bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-gray-100 py-2 z-50"
+                  >
+                    <button onClick={() => handleRateChange('-20%')} className="w-full text-left px-5 py-2.5 text-[14px] text-[#444746] hover:bg-[#F0F4F9] flex items-center justify-between transition-colors">
+                      沉稳慢速 {ttsRate === '-20%' && <Check className="w-4 h-4 text-[#1A73E8]"/>}
+                    </button>
+                    <button onClick={() => handleRateChange('+0%')} className="w-full text-left px-5 py-2.5 text-[14px] text-[#444746] hover:bg-[#F0F4F9] flex items-center justify-between transition-colors">
+                      知性原声 {ttsRate === '+0%' && <Check className="w-4 h-4 text-[#1A73E8]"/>}
+                    </button>
+                    <button onClick={() => handleRateChange('+20%')} className="w-full text-left px-5 py-2.5 text-[14px] text-[#444746] hover:bg-[#F0F4F9] flex items-center justify-between transition-colors">
+                      思维快语 {ttsRate === '+20%' && <Check className="w-4 h-4 text-[#1A73E8]"/>}
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             <VoiceToggle 
               enabled={ttsEnabled} 
               onToggle={handleToggleTts} 
