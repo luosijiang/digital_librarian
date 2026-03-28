@@ -16,6 +16,10 @@ import llm
 
 app = FastAPI(title="Ultimate Digital Librarian")
 
+@app.get("/")
+def read_root():
+    return {"status": "Librarian System Online", "version": "1.0.0"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
