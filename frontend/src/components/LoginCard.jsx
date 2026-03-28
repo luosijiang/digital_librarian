@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
+import { API_BASE } from '../api';
 
 export default function LoginCard({ onLogin }) {
   const [username, setUsername] = useState('admin');
@@ -17,7 +18,7 @@ export default function LoginCard({ onLogin }) {
       formData.append('username', username);
       formData.append('password', password);
 
-      const res = await fetch('http://localhost:8000/token', {
+      const res = await fetch(`${API_BASE}/token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',

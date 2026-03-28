@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { LogOut, ArrowUp, Plus, MessageSquare, Trash2 } from 'lucide-react';
+import { API_BASE } from '../api';
 import MessageList from './MessageList';
 import VoiceControl from './VoiceControl';
 import VoiceToggle from './VoiceToggle';
@@ -55,7 +56,7 @@ export default function ChatRoom({ token, onLogout }) {
 
   const fetchSessions = async () => {
     try {
-      const res = await fetch('http://localhost:8000/sessions', {
+      const res = await fetch(`${API_BASE}/sessions`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -72,7 +73,7 @@ export default function ChatRoom({ token, onLogout }) {
 
   const fetchHistory = async (sessionId) => {
     try {
-      const res = await fetch(`http://localhost:8000/history?session_id=${sessionId}`, {
+      const res = await fetch(`${API_BASE}/history?session_id=${sessionId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -102,7 +103,7 @@ export default function ChatRoom({ token, onLogout }) {
     if (loadingRef.current) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/sessions/${sessionId}`, {
+      const res = await fetch(`${API_BASE}/sessions/${sessionId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -138,7 +139,7 @@ export default function ChatRoom({ token, onLogout }) {
     abortControllerRef.current = new AbortController();
 
     try {
-      const res = await fetch('http://localhost:8000/chat', {
+      const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
