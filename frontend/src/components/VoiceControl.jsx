@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Mic } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-export default function VoiceControl({ onResult }) {
+export default function VoiceControl({ onResult, onUnlock }) {
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef(null);
 
@@ -36,6 +36,7 @@ export default function VoiceControl({ onResult }) {
   }, [onResult]);
 
   const handlePointerDown = () => {
+    if (onUnlock) onUnlock();
     if (!recognitionRef.current) return alert("当前浏览器不支持 Web Speech API");
     try {
       recognitionRef.current.start();

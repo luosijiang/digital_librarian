@@ -119,8 +119,27 @@ export default function ChatRoom({ token, onLogout }) {
     }
   };
 
+  // 用于高性能播放 edge-tts 的音频对象
+  const audioRef = useRef(new Audio());
+
+  // 移动端安全策略：在用户第一次交互（点击发送或语音按钮）时，触发音频播放授权
+  const unlockAudio = useCallback(() => {
+    const audio = audioRef.current;
+    if (audio.paused) {
+      // 播放一段极短的静音或简单载入，告诉系统“我要放音了”
+      audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"; 
+      audio.play().then(() => {
+        audio.pause();
+        console.log("Audio context unlocked for mobile");
+      }).catch(e => console.error("Audio unlock failed", e));
+    }
+  }, []);
+
   const handleSend = async (text) => {
     if (!text.trim() || loadingRef.current) return;
+    
+    // 触发解锁（兼容移动端）
+    unlockAudio();
 
     const activeSessionId = currentSessionId || `session_${Date.now()}`;
     if (!currentSessionId) setCurrentSessionId(activeSessionId);
@@ -162,7 +181,6 @@ export default function ChatRoom({ token, onLogout }) {
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          // ✅ 修复：正确的换行符分割
           const lines = buffer.split('\n');
           buffer = lines.pop();
 
@@ -189,7 +207,11 @@ export default function ChatRoom({ token, onLogout }) {
         globalStreamingMsgId = null;
         fetchSessions();
 
-        if (ttsEnabled && fullVoiceText) playAudio(fullVoiceText);
+        // 播报：去掉 markdown 标记，只读纯文本
+        if (ttsEnabled && fullVoiceText) {
+          const cleanText = fullVoiceText.replace(/[#*`~>]/g, '').trim();
+          playAudio(cleanText);
+        }
       }
     } catch (e) {
       if (e.name !== 'AbortError') console.error(e);
@@ -199,17 +221,25 @@ export default function ChatRoom({ token, onLogout }) {
   };
 
   const playAudio = (text) => {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'zh-CN';
-    utterance.rate = 1.05;
-    const voices = window.speechSynthesis.getVoices();
-    const femaleVoice = voices.find(v => v.lang.includes('zh') && (v.name.includes('Xiaoxiao') || v.name.includes('Female') || v.name.includes('Tingting')));
-    if (femaleVoice) utterance.voice = femaleVoice;
-    window.speechSynthesis.speak(utterance);
+    if (!text) return;
+    try {
+      const audio = audioRef.current;
+      audio.pause();
+      // 使用后端 edge-tts 接口，晓晓音色
+      const encodedText = encodeURIComponent(text);
+      audio.src = `${API_BASE}/tts?text=${encodedText}`;
+      audio.play().catch(e => {
+        console.error("Playback error (likely mobile restriction):", e);
+      });
+    } catch (e) {
+      console.error("TTS System Error:", e);
+    }
   };
 
-  const stopAudio = () => window.speechSynthesis.cancel();
+  const stopAudio = () => {
+    audioRef.current.pause();
+    audioRef.current.src = "";
+  };
 
   return (
     <motion.div
@@ -329,7 +359,10 @@ export default function ChatRoom({ token, onLogout }) {
               style={{ minHeight: '52px', maxHeight: '200px' }}
             />
             <div className="flex items-center gap-1 pb-1.5 pr-1.5">
-              <VoiceControl onResult={(text) => handleSend(text)} />
+              <VoiceControl 
+                onResult={(text) => handleSend(text)} 
+                onUnlock={unlockAudio}
+              />
               <button
                 onClick={() => { handleSend(textInput); setTextInput(''); }}
                 disabled={!textInput.trim() || loading}
