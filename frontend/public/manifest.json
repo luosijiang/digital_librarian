@@ -1,0 +1,16 @@
+{
+  "name": "数字馆长",
+  "short_name": "馆长",
+  "description": "全知数字馆长，书籍与智慧的引领者",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

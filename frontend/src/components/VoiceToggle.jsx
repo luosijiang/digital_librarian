@@ -1,7 +1,7 @@
 import React from 'react';
-import { Volume2, VolumeX, Square } from 'lucide-react';
+import { Volume2, VolumeX, Pause, Play } from 'lucide-react';
 
-export default function VoiceToggle({ enabled, onToggle, onStop }) {
+export default function VoiceToggle({ enabled, onToggle, isPlaying, onTogglePlayback, hasAudio }) {
   return (
     <div className="flex items-center gap-1 bg-[#F0F4F9] rounded-full p-1.5 transition-colors">
       <button 
@@ -11,18 +11,20 @@ export default function VoiceToggle({ enabled, onToggle, onStop }) {
             ? 'bg-white text-[#1A73E8] shadow-sm' 
             : 'text-[#444746] hover:bg-[#E1E5EA]'
         }`}
-        title="语音播报开关"
+        title={enabled ? "语音播报：开" : "语音播报：关"}
       >
         {enabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
       </button>
       
-      {enabled && (
+      {enabled && hasAudio && (
         <button 
-          onClick={onStop}
-          className="p-2 rounded-full text-[#444746] hover:bg-red-50 hover:text-red-600 transition-colors"
-          title="停止当前发声"
+          onClick={onTogglePlayback}
+          className={`p-2 rounded-full transition-colors ${
+            isPlaying ? 'text-[#1A73E8] hover:bg-[#E1E5EA]' : 'text-[#444746] hover:bg-[#E1E5EA]'
+          }`}
+          title={isPlaying ? "暂停语⾳" : "继续播放"}
         >
-          <Square className="w-[14px] h-[14px]" fill="currentColor" />
+          {isPlaying ? <Pause className="w-[14px] h-[14px]" fill="currentColor" /> : <Play className="w-[14px] h-[14px]" fill="currentColor" />}
         </button>
       )}
     </div>

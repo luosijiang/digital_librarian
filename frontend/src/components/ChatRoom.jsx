@@ -16,12 +16,16 @@ export default function ChatRoom({ token, onLogout }) {
   const [loading, setLoading] = useState(false);
   const [textInput, setTextInput] = useState("");
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
 
   // 用 ref 持久持有 loading 和消息，避免切换 sidebar 时丢失
   const loadingRef = useRef(false);
   const messagesRef = useRef([]);
   const messagesEndRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const audioQueueRef = useRef([]);
+  const audioRef = useRef(null);
+  const sentenceBufferRef = useRef("");
 
   // 同步 ref 和 state
   const setMessagesAndRef = useCallback((updater) => {
@@ -119,17 +123,15 @@ export default function ChatRoom({ token, onLogout }) {
     }
   };
 
-  // 用于高性能播放 edge-tts 的音频对象
-  const audioRef = useRef(new Audio());
-
   // 移动端安全策略：在用户第一次交互（点击发送或语音按钮）时，触发音频播放授权
   const unlockAudio = useCallback(() => {
     const audio = audioRef.current;
-    if (audio.paused) {
+    if (audio && audio.paused && !audio.src.includes('data:audio')) {
       // 播放一段极短的静音或简单载入，告诉系统“我要放音了”
       audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"; 
       audio.play().then(() => {
         audio.pause();
+        audio.src = "";
         console.log("Audio context unlocked for mobile");
       }).catch(e => console.error("Audio unlock failed", e));
     }
@@ -178,7 +180,14 @@ export default function ChatRoom({ token, onLogout }) {
 
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            // 最后如果还有剩下的没停顿的词，也抛进队列
+            if (sentenceBufferRef.current.trim() && ttsEnabled) {
+               pushToAudioQueue(sentenceBufferRef.current);
+               sentenceBufferRef.current = "";
+            }
+            break;
+          }
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
@@ -190,7 +199,7 @@ export default function ChatRoom({ token, onLogout }) {
             try {
               const data = JSON.parse(trimmed);
               if (data.chunk) {
-                fullVoiceText += data.chunk;
+                // UI 展示拼接
                 setMessagesAndRef(prev =>
                   prev.map(msg =>
                     msg.id === assistantMsgId
@@ -198,6 +207,19 @@ export default function ChatRoom({ token, onLogout }) {
                       : msg
                   )
                 );
+                
+                // 语音断句缓存拼接
+                if (ttsEnabled) {
+                  sentenceBufferRef.current += data.chunk;
+                  // 用正则寻找最近的标点符号截断
+                  const match = sentenceBufferRef.current.match(/([。！？；.!?\n]+)/);
+                  if (match) {
+                    const splitIndex = match.index + match[0].length;
+                    const sentence = sentenceBufferRef.current.slice(0, splitIndex);
+                    sentenceBufferRef.current = sentenceBufferRef.current.slice(splitIndex);
+                    pushToAudioQueue(sentence);
+                  }
+                }
               }
             } catch (_) { /* 忽略不完整 JSON */ }
           }
@@ -206,12 +228,6 @@ export default function ChatRoom({ token, onLogout }) {
         setLoadingAndRef(false);
         globalStreamingMsgId = null;
         fetchSessions();
-
-        // 播报：去掉 markdown 标记，只读纯文本
-        if (ttsEnabled && fullVoiceText) {
-          const cleanText = fullVoiceText.replace(/[#*`~>]/g, '').trim();
-          playAudio(cleanText);
-        }
       }
     } catch (e) {
       if (e.name !== 'AbortError') console.error(e);
@@ -220,25 +236,63 @@ export default function ChatRoom({ token, onLogout }) {
     }
   };
 
-  const playAudio = (text) => {
+  const pushToAudioQueue = (rawText) => {
+    const text = rawText.replace(/[#*`~>]/g, '').trim();
     if (!text) return;
-    try {
-      const audio = audioRef.current;
-      audio.pause();
-      // 使用后端 edge-tts 接口，晓晓音色
-      const encodedText = encodeURIComponent(text);
-      audio.src = `${API_BASE}/tts?text=${encodedText}`;
-      audio.play().catch(e => {
-        console.error("Playback error (likely mobile restriction):", e);
-      });
-    } catch (e) {
-      console.error("TTS System Error:", e);
+    audioQueueRef.current.push(text);
+    if (!isAudioPlaying && (audioRef.current && audioRef.current.paused)) {
+      playNextAudio();
     }
   };
 
-  const stopAudio = () => {
-    audioRef.current.pause();
-    audioRef.current.src = "";
+  const playNextAudio = () => {
+    if (audioQueueRef.current.length === 0) {
+      setIsAudioPlaying(false);
+      return;
+    }
+    const text = audioQueueRef.current.shift();
+    if (audioRef.current) {
+      const encodedText = encodeURIComponent(text);
+      audioRef.current.src = `${API_BASE}/tts?text=${encodedText}`;
+      setIsAudioPlaying(true);
+      
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(e => {
+          console.error("Playback error:", e);
+          setIsAudioPlaying(false);
+          // 如果某句话被浏览器拦截或加载失败，跳过并常试播放下一句
+          playNextAudio();
+        });
+      }
+    }
+  };
+
+  const onTogglePlayback = () => {
+    if (!audioRef.current) return;
+    if (isAudioPlaying) {
+      audioRef.current.pause();
+      setIsAudioPlaying(false);
+    } else {
+      if (audioRef.current.src && !audioRef.current.src.includes('data:audio')) {
+        audioRef.current.play().then(() => setIsAudioPlaying(true)).catch(e => console.error(e));
+      } else {
+        playNextAudio();
+      }
+    }
+  };
+
+  const handleToggleTts = (enabled) => {
+    setTtsEnabled(enabled);
+    if (!enabled) {
+      audioQueueRef.current = [];
+      sentenceBufferRef.current = "";
+      if (audioRef.current) {
+         audioRef.current.pause();
+         audioRef.current.src = "";
+      }
+      setIsAudioPlaying(false);
+    }
   };
 
   return (
@@ -249,8 +303,9 @@ export default function ChatRoom({ token, onLogout }) {
       transition={{ duration: 0.5, ease: "easeOut" }}
       className="w-full h-full flex overflow-hidden relative z-10 bg-white"
     >
+      <audio ref={audioRef} onEnded={playNextAudio} className="hidden" />
       {/* Left Sidebar */}
-      <div className="w-64 bg-[#F0F4F9]/60 border-r border-[#E1E5EA] flex-col pt-4 hidden md:flex h-full flex-shrink-0 z-30">
+      <div className="w-64 bg-[#F0F4F9]/60 border-r border-[#E1E5EA] flex-col flex-shrink-0 z-30 hidden md:flex h-full" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
         <div className="px-4 pb-4">
           <button
             onClick={handleNewChat}
@@ -304,8 +359,8 @@ export default function ChatRoom({ token, onLogout }) {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col h-full relative">
-        <div className="flex justify-between items-center px-6 py-4 bg-white/95 backdrop-blur-xl border-b border-[#F0F4F9] sticky top-0 z-20">
+      <div className="flex-1 flex flex-col h-full relative overflow-hidden">
+        <div className="flex justify-between items-center px-6 py-4 bg-white/95 backdrop-blur-xl border-b border-[#F0F4F9] sticky top-0 z-20" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
           <div className="flex items-center gap-2">
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 text-xl font-semibold select-none">✨</span>
             <h1 className="text-lg font-medium text-[#1F1F1F] tracking-tight">数字馆长模型</h1>
@@ -319,7 +374,13 @@ export default function ChatRoom({ token, onLogout }) {
                 <span className="ml-1">推演中</span>
               </div>
             )}
-            <VoiceToggle enabled={ttsEnabled} onToggle={setTtsEnabled} onStop={stopAudio} />
+            <VoiceToggle 
+              enabled={ttsEnabled} 
+              onToggle={handleToggleTts} 
+              isPlaying={isAudioPlaying}
+              onTogglePlayback={onTogglePlayback}
+              hasAudio={true}
+            />
           </div>
         </div>
 
@@ -340,7 +401,7 @@ export default function ChatRoom({ token, onLogout }) {
         </div>
 
         {/* Input Area */}
-        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-10 pb-6 px-4 z-20">
+        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-10 px-4 z-20" style={{ paddingBottom: 'calc(1.5rem + var(--sab))' }}>
           <div className="max-w-[48rem] mx-auto relative flex items-end gap-2 bg-[#F0F4F9] rounded-[32px] p-2 focus-within:bg-white focus-within:shadow-[0_2px_15px_rgba(0,0,0,0.08)] border border-transparent focus-within:border-[#E1E5EA] transition-all duration-300">
             <textarea
               value={textInput}
