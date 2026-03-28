@@ -247,7 +247,8 @@ export default function ChatRoom({ token, onLogout }) {
   };
 
   const pushToAudioQueue = async (rawText) => {
-    const text = rawText.replace(/[#*`~>]/g, '').trim();
+    // 过滤掉所有可能被误读的 Markdown 符号、加减号、下划线以及常见的中英括号，保留纯文本与核心标点
+    const text = rawText.replace(/[*#`~>_\-+=|\\^{}\[\]()（）《》「」【】]/g, '').trim();
     if (!text) return;
     
     // Asynchronous Blob Prefetching
@@ -507,7 +508,7 @@ export default function ChatRoom({ token, onLogout }) {
         </div>
 
         {/* Input Area */}
-        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-10 px-4 z-20" style={{ paddingBottom: 'max(1.2rem, var(--sab))' }}>
+        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-6 px-4 z-20" style={{ paddingBottom: 'calc(0.75rem + var(--sab))' }}>
           <div className="max-w-[48rem] mx-auto relative flex items-end gap-2 bg-[#F0F4F9] rounded-[32px] p-2 focus-within:bg-white focus-within:shadow-[0_2px_15px_rgba(0,0,0,0.08)] border border-transparent focus-within:border-[#E1E5EA] transition-all duration-300">
             <textarea
               value={textInput}
@@ -543,7 +544,7 @@ export default function ChatRoom({ token, onLogout }) {
               </button>
             </div>
           </div>
-          <div className="text-center mt-3 text-[11px] text-[#444746] tracking-wide relative z-30 pointer-events-none">
+          <div className="hidden sm:block text-center mt-3 text-[11px] text-[#444746] tracking-wide relative z-30 pointer-events-none">
             提示：推演模型基于本地上下文生成，可能带有幻觉。如遇长时等待，属于正常推演成本。
           </div>
         </div>
