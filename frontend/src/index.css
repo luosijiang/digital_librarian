@@ -4,17 +4,31 @@
 
 @layer base {
   :root {
-    --sat: env(safe-area-inset-top, 0px);
-    --sar: env(safe-area-inset-right, 0px);
-    --sab: env(safe-area-inset-bottom, 0px);
-    --sal: env(safe-area-inset-left, 0px);
+    --sat: 0px;
+    --sar: 0px;
+    --sab: 0px;
+    --sal: 0px;
   }
 
-  html, body {
+  /* 只有在作为 PWA 独立运行时，才启用原生底部安全区补偿，完美解决微信/Safari 中的大下巴 Bug */
+  @media all and (display-mode: standalone) {
+    :root {
+      --sat: env(safe-area-inset-top, 0px);
+      --sar: env(safe-area-inset-right, 0px);
+      --sab: env(safe-area-inset-bottom, 0px);
+      --sal: env(safe-area-inset-left, 0px);
+    }
+  }
+
+  html, body, #root {
     @apply bg-white text-gemini-text overflow-hidden font-sans m-0 p-0;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
     height: 100%;
-    height: 100vh;
-    height: 100dvh;
     background-color: #FFFFFF;
     /* 禁止系统回弹/下拉刷新，增强 APP 感 */
     overscroll-behavior-y: none;
