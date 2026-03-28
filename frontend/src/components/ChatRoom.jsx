@@ -507,7 +507,7 @@ export default function ChatRoom({ token, onLogout }) {
         </div>
 
         {/* Input Area */}
-        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-10 px-4 z-20" style={{ paddingBottom: 'calc(1.5rem + var(--sab))' }}>
+        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-10 px-4 z-20" style={{ paddingBottom: 'max(1.2rem, var(--sab))' }}>
           <div className="max-w-[48rem] mx-auto relative flex items-end gap-2 bg-[#F0F4F9] rounded-[32px] p-2 focus-within:bg-white focus-within:shadow-[0_2px_15px_rgba(0,0,0,0.08)] border border-transparent focus-within:border-[#E1E5EA] transition-all duration-300">
             <textarea
               value={textInput}
