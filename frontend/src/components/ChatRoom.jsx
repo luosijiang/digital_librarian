@@ -428,7 +428,7 @@ export default function ChatRoom({ token, onLogout }) {
       })()}
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col h-full relative overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
         <div className="flex justify-between items-center px-4 md:px-6 py-4 bg-white/95 backdrop-blur-xl border-b border-[#F0F4F9] sticky top-0 z-20" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
           <div className="flex items-center gap-2">
             <button 

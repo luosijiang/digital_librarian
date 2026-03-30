@@ -4,49 +4,43 @@
 
 @layer base {
   :root {
+    /* 安全区变量 - 仅在 PWA 独立模式下启用 */
     --sat: 0px;
-    --sar: 0px;
     --sab: 0px;
-    --sal: 0px;
+    /* 应用高度由 JS 动态设置，回退到 100vh */
+    --app-height: 100vh;
   }
 
-  /* 只有在作为 PWA 独立运行时，才启用原生底部安全区补偿，完美解决微信/Safari 中的大下巴 Bug */
   @media all and (display-mode: standalone) {
     :root {
       --sat: env(safe-area-inset-top, 0px);
-      --sar: env(safe-area-inset-right, 0px);
       --sab: env(safe-area-inset-bottom, 0px);
-      --sal: env(safe-area-inset-left, 0px);
     }
   }
 
   html {
-    @apply m-0 p-0;
     height: 100%;
-    height: -webkit-fill-available;
+    margin: 0;
+    padding: 0;
     overflow: hidden;
   }
 
   body {
-    @apply bg-white text-gemini-text font-sans m-0 p-0;
+    margin: 0;
+    padding: 0;
     height: 100%;
-    height: -webkit-fill-available;
-    width: 100vw;
+    width: 100%;
     overflow: hidden;
     background-color: #FFFFFF;
-    /* 禁止系统回弹/下拉刷新，增强 APP 感 */
     overscroll-behavior-y: none;
     -webkit-tap-highlight-color: transparent;
-    display: flex;
-    flex-direction: column;
   }
-  
+
   #root {
     width: 100%;
     height: 100%;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
   }
 }
 
