@@ -491,8 +491,9 @@ export default function ChatRoom({ token, onLogout }) {
           </div>
         </div>
 
+        {/* Messages Scroll Area */}
         <div className="flex-1 overflow-y-auto w-full relative">
-          <div className="max-w-[48rem] mx-auto w-full px-4 pt-10 pb-36">
+          <div className="max-w-[48rem] mx-auto w-full px-4 pt-10 pb-10">
             {messages.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center mt-32">
                 <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 text-6xl mb-6 select-none opacity-80">✨</span>
@@ -507,8 +508,8 @@ export default function ChatRoom({ token, onLogout }) {
           </div>
         </div>
 
-        {/* Input Area */}
-        <div className="absolute bottom-0 w-full bg-gradient-to-t from-white via-white to-white/0 pt-6 px-4 z-20" style={{ paddingBottom: 'calc(0.75rem + var(--sab))' }}>
+        {/* Input Area - Now part of flex flow */}
+        <div className="w-full bg-white border-t border-[#F0F4F9] pt-4 px-4 shadow-[0_-4px_20px_rgba(0,0,0,0.02)]" style={{ paddingBottom: 'calc(1rem + var(--sab))' }}>
           <div className="max-w-[48rem] mx-auto relative flex items-end gap-2 bg-[#F0F4F9] rounded-[32px] p-2 focus-within:bg-white focus-within:shadow-[0_2px_15px_rgba(0,0,0,0.08)] border border-transparent focus-within:border-[#E1E5EA] transition-all duration-300">
             <textarea
               value={textInput}
