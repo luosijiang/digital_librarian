@@ -17,11 +17,13 @@ function App() {
   };
 
   return (
-    <main className="w-full h-full relative flex flex-col overflow-hidden bg-white">
-      {/* Background visual elements for Gemini-like soft glowing gradient */}
-      <div className="absolute top-0 left-[10%] w-[500px] h-[500px] bg-blue-100/50 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute top-[20%] right-[10%] w-[600px] h-[600px] bg-purple-100/40 rounded-full blur-[140px] pointer-events-none"></div>
-      <div className="absolute bottom-[10%] left-[30%] w-[600px] h-[600px] bg-pink-50/60 rounded-full blur-[120px] pointer-events-none"></div>
+    <main className="w-full h-full relative flex flex-col bg-white">
+      {/* 背景光晕：放在完全隔离的 z-[-1] 层，从物理层面防止触摸事件被拦截 */}
+      <div aria-hidden="true" className="fixed inset-0 z-[-1] pointer-events-none overflow-hidden">
+        <div className="absolute top-0 left-[10%] w-[500px] h-[500px] bg-blue-100/50 rounded-full blur-[120px]"></div>
+        <div className="absolute top-[20%] right-[10%] w-[600px] h-[600px] bg-purple-100/40 rounded-full blur-[140px]"></div>
+        <div className="absolute bottom-[10%] left-[30%] w-[600px] h-[600px] bg-pink-50/60 rounded-full blur-[120px]"></div>
+      </div>
 
       <AnimatePresence mode="wait">
         {!token ? (
@@ -29,7 +31,7 @@ function App() {
             <LoginCard onLogin={handleLogin} />
           </div>
         ) : (
-          <div key="chat" className="flex-1 w-full h-full overflow-hidden">
+          <div key="chat" className="flex-1 w-full min-h-0 flex flex-col">
             <ChatRoom token={token} onLogout={handleLogout} />
           </div>
         )}

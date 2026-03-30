@@ -329,7 +329,7 @@ export default function ChatRoom({ token, onLogout }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.5, ease: "easeOut" }}
-      className="w-full h-full flex overflow-hidden relative z-10 bg-white"
+      className="w-full flex-1 min-h-0 flex overflow-hidden relative z-10 bg-white"
     >
       <audio ref={audioRef} onEnded={playNextAudio} className="hidden" />
       
