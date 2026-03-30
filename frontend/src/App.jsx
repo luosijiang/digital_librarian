@@ -17,7 +17,7 @@ function App() {
   };
 
   return (
-    <main className="w-full h-screen relative flex items-center justify-center overflow-hidden bg-white">
+    <main className="w-full h-full relative flex items-center justify-center overflow-hidden bg-white">
       {/* Background visual elements for Gemini-like soft glowing gradient */}
       <div className="absolute top-0 left-[10%] w-[500px] h-[500px] bg-blue-100/50 rounded-full blur-[120px] pointer-events-none"></div>
       <div className="absolute top-[20%] right-[10%] w-[600px] h-[600px] bg-purple-100/40 rounded-full blur-[140px] pointer-events-none"></div>
