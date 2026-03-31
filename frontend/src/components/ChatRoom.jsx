@@ -322,6 +322,7 @@ export default function ChatRoom({ token, onLogout }) {
         URL.revokeObjectURL(audioRef.current.src);
       }
       audioRef.current.src = url;
+      audioRef.current.load(); // 强制重载，确保移动端 Safari 正确接收新媒体源
       isAudioPlayingRef.current = true;
       setIsAudioPlaying(true);
       const playPromise = audioRef.current.play();
@@ -500,7 +501,7 @@ export default function ChatRoom({ token, onLogout }) {
             </button>
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 text-xl font-semibold select-none hidden sm:inline-block">✨</span>
             <h1 className="text-lg font-medium text-[#1F1F1F] tracking-tight">数字馆长模型</h1>
-            <span className="text-[10px] font-mono text-[#444746] opacity-50 tracking-wider select-none hidden md:inline-block">{APP_VERSION}</span>
+            <span className="text-[10px] font-mono text-[#444746] opacity-50 tracking-wider select-none">{APP_VERSION}</span>
           </div>
           <div className="flex items-center gap-2 md:gap-3">
             {loading && (
@@ -513,7 +514,12 @@ export default function ChatRoom({ token, onLogout }) {
             )}
             
             <button
-              onClick={() => setIsVoiceRoomOpen(true)}
+              onClick={() => {
+                unlockAudio(); // 进入语音室时即刷新音频锁，确保用户手势当下生效
+                setRevealedVoiceText('');
+                voiceTextQueueRef.current = [];
+                setIsVoiceRoomOpen(true);
+              }}
               className="w-9 h-9 flex items-center justify-center rounded-full text-[#444746] hover:bg-black/5 hover:text-[#1A73E8] transition-colors"
               title="进入沉浸式语音对话模式"
             >

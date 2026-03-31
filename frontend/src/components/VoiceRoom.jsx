@@ -19,6 +19,12 @@ export default function VoiceRoom({
   const isStartedRef = useRef(false);
   const retryTimerRef = useRef(null);
 
+  // 稳定化不稳定回调，防止由父组件渲染引发的不必要 Effect 清除
+  const onSendRef = useRef(onSend);
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
+
   // ─── 语音识别引擎初始化 ──────────────────────────────────
   const createRecognition = useCallback(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -42,7 +48,7 @@ export default function VoiceRoom({
       }
       if (final) {
         setTranscript(final);
-        onSend(final);
+        onSendRef.current(final);
         setRoomState('PROCESSING');
         isStartedRef.current = false;
       } else {
@@ -87,7 +93,7 @@ export default function VoiceRoom({
     };
 
     return recognition;
-  }, [onSend]);
+  }, []); // 依赖项置空，靠 Ref 获取最新回调
 
   // ─── 从 ChatRoom 同步 AI 工作状态 ─────────────────────────
   useEffect(() => {
