@@ -38,6 +38,7 @@ export default function ChatRoom({ token, onLogout }) {
   const sentenceBufferRef = useRef("");
   const ttsRateRef = useRef("+0%");
   const ttsEnabledRef = useRef(true);
+  const isAudioPlayingRef = useRef(false);
 
   const handleRateChange = (rate) => {
     setTtsRate(rate);
@@ -278,8 +279,8 @@ export default function ChatRoom({ token, onLogout }) {
         const url = URL.createObjectURL(blob);
         audioQueueRef.current.push(url);
         setAudioQueueLength(prev => prev + 1); // 同步状态给被动观察者
-        // 只依赖最新的原生 HTMLMediaElement.paused 属性
-        if (audioRef.current && audioRef.current.paused) {
+        // 绝对避免闭包旧状态和微任务污染，严格通过 Ref 锁定单一播放管线
+        if (!isAudioPlayingRef.current) {
           playNextAudio();
         }
       }
@@ -292,6 +293,7 @@ export default function ChatRoom({ token, onLogout }) {
 
   const playNextAudio = () => {
     if (audioQueueRef.current.length === 0) {
+      isAudioPlayingRef.current = false;
       setIsAudioPlaying(false);
       return;
     }
@@ -304,14 +306,16 @@ export default function ChatRoom({ token, onLogout }) {
       }
       
       audioRef.current.src = url;
+      isAudioPlayingRef.current = true;
       setIsAudioPlaying(true);
       
       const playPromise = audioRef.current.play();
       if (playPromise !== undefined) {
         playPromise.catch(e => {
           console.error("Playback error:", e);
+          isAudioPlayingRef.current = false;
           setIsAudioPlaying(false);
-          // 如果某句话被浏览器拦截或加载失败，跳过并常试播放下一句
+          // 如果某句话被浏览器拦截或加载失败，跳过并尝试播放下一句
           playNextAudio();
         });
       }
@@ -325,17 +329,24 @@ export default function ChatRoom({ token, onLogout }) {
     audioQueueRef.current = [];
     setAudioQueueLength(0);
     sentenceBufferRef.current = "";
+    isAudioPlayingRef.current = false;
     setIsAudioPlaying(false);
   };
 
   const onTogglePlayback = () => {
     if (!audioRef.current) return;
-    if (isAudioPlaying) {
+    if (isAudioPlayingRef.current) {
       audioRef.current.pause();
+      isAudioPlayingRef.current = false;
       setIsAudioPlaying(false);
     } else {
       if (audioRef.current.src && !audioRef.current.src.includes('data:audio')) {
-        audioRef.current.play().then(() => setIsAudioPlaying(true)).catch(e => console.error(e));
+        audioRef.current.play()
+          .then(() => {
+            isAudioPlayingRef.current = true;
+            setIsAudioPlaying(true);
+          })
+          .catch(e => console.error(e));
       } else {
         playNextAudio();
       }
@@ -352,6 +363,7 @@ export default function ChatRoom({ token, onLogout }) {
          audioRef.current.pause();
          audioRef.current.src = "";
       }
+      isAudioPlayingRef.current = false;
       setIsAudioPlaying(false);
     }
   };

@@ -96,6 +96,8 @@ export default function VoiceRoom({
 
   // 状态机核心控制（通过 state 变化驱动硬件）
   useEffect(() => {
+    let timeoutId;
+
     if (roomState === 'LISTENING') {
       const recognition = createRecognition();
       if (!recognition) {
@@ -105,14 +107,18 @@ export default function VoiceRoom({
       }
       
       if (!isStartedRef.current) {
-        try {
-          recognitionRef.current = recognition;
-          recognition.start();
-          isStartedRef.current = true;
-          setTranscript(''); // 重置 UI 上的用户话语
-        } catch (e) {
-          console.error("Start error:", e);
-        }
+        // 增加 800ms 缓冲延迟：防止 iOS Safari/WebKit 在上一轮 TTS 音频刚结束时，
+        // 麦克风与扬声器硬件通道死锁导致暴毙引发 (audio-capture) 故障
+        timeoutId = setTimeout(() => {
+          try {
+            recognitionRef.current = recognition;
+            recognition.start();
+            isStartedRef.current = true;
+            setTranscript(''); // 重置 UI 上的用户话语
+          } catch (e) {
+            console.error("Start error:", e);
+          }
+        }, 800);
       }
     } else {
       // 如果进入了其他状态（处理中、说话中、出错），则停止录音
@@ -125,6 +131,7 @@ export default function VoiceRoom({
     }
 
     return () => {
+      clearTimeout(timeoutId);
       if (recognitionRef.current && isStartedRef.current) {
         try { recognitionRef.current.abort(); } catch (_) {}
       }
