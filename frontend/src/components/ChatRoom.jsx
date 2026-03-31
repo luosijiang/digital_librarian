@@ -244,7 +244,8 @@ export default function ChatRoom({ token, onLogout }) {
                   sentenceBufferRef.current += data.chunk;
                   // 用正则寻找最近的标点符号截断
                   let match;
-                  while ((match = sentenceBufferRef.current.match(/([。！？；.!?\n]+)/))) {
+                  // 细粒度拦截：加入中文逗号，顿号，英文逗号，确保长句子即使不结束也立刻被分段下发TTS
+                  while ((match = sentenceBufferRef.current.match(/([。！？；，、.!?,\n]+)/))) {
                     const splitIndex = match.index + match[0].length;
                     const sentence = sentenceBufferRef.current.slice(0, splitIndex);
                     sentenceBufferRef.current = sentenceBufferRef.current.slice(splitIndex);
