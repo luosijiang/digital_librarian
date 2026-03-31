@@ -7,6 +7,7 @@ export default function VoiceRoom({
   isAiActive,
   revealedVoiceText,  // 与音频严格同步的已播报文字
   onSend, 
+  onInterrupt,        // 用户主动打断时的回调
   onClose 
 }) {
   // 核心状态机
@@ -18,12 +19,18 @@ export default function VoiceRoom({
   const recognitionRef = useRef(null);
   const isStartedRef = useRef(false);
   const retryTimerRef = useRef(null);
+  const roomStateRef = useRef(roomState); // 让完全隔离的 onresult 取到最新状态
+  const [restartMic, setRestartMic] = useState(0); // 强制重启 Mic 的心跳针
+
+  useEffect(() => { roomStateRef.current = roomState; }, [roomState]);
 
   // 稳定化不稳定回调，防止由父组件渲染引发的不必要 Effect 清除
   const onSendRef = useRef(onSend);
+  const onInterruptRef = useRef(onInterrupt);
   useEffect(() => {
     onSendRef.current = onSend;
-  }, [onSend]);
+    onInterruptRef.current = onInterrupt;
+  }, [onSend, onInterrupt]);
 
   // ─── 语音识别引擎初始化 ──────────────────────────────────
   const createRecognition = useCallback(() => {
@@ -48,7 +55,14 @@ export default function VoiceRoom({
       }
       if (final) {
         setTranscript(final);
-        onSendRef.current(final);
+        
+        // 核心：如果是回话状态，用户突然说话 → 判定为打断！
+        if (roomStateRef.current === 'SPEAKING') {
+           if (onInterruptRef.current) onInterruptRef.current(final);
+        } else {
+           onSendRef.current(final);
+        }
+        
         setRoomState('PROCESSING');
         isStartedRef.current = false;
       } else {
@@ -61,8 +75,8 @@ export default function VoiceRoom({
       isStartedRef.current = false;
 
       if (event.error === 'aborted') return;          // 我们主动中止，忽略
-      if (event.error === 'no-speech') {              // 超时无人说话 → 自动重启
-        setRoomState(prev => prev === 'LISTENING' ? 'LISTENING' : prev);
+      if (event.error === 'no-speech') {              // 超时无人说话 → 静默重启
+        setRestartMic(r => r + 1); // 强制触动底层的 useEffect
         return;
       }
       if (event.error === 'not-allowed') {
@@ -85,11 +99,10 @@ export default function VoiceRoom({
 
     recognition.onend = () => {
       isStartedRef.current = false;
-      setRoomState(prev => {
-        // 如果还在听，说明是正常超时（no-speech），直接重启
-        if (prev === 'LISTENING') return 'LISTENING';
-        return prev;
-      });
+      // 硬件层真正断开后，如果我们仍在监听期内（即使是AI正在说话的监听期），强制心跳重启
+      if (roomStateRef.current === 'LISTENING' || roomStateRef.current === 'SPEAKING') {
+         setRestartMic(r => r + 1);
+      }
     };
 
     return recognition;
@@ -114,7 +127,8 @@ export default function VoiceRoom({
   useEffect(() => {
     let timeoutId;
 
-    if (roomState === 'LISTENING') {
+    // 当系统在听，亦或者当系统在说话（允许被打断双工模式）时，都要开启麦克风！
+    if (roomState === 'LISTENING' || roomState === 'SPEAKING') {
       const recognition = createRecognition();
       if (!recognition) {
         setErrorMsg('当前浏览器不支持语音识别，请使用 Safari 或 Chrome');
@@ -123,20 +137,21 @@ export default function VoiceRoom({
         return;
       }
       if (!isStartedRef.current) {
-        // 800ms 缓冲：让 iOS 硬件完全释放扬声器通道后再占用麦克风
+        // SPEAKING 时抢断缓冲短（立刻听），LISTENING 时重设缓冲长（防抢资源）
         timeoutId = setTimeout(() => {
           try {
             recognitionRef.current = recognition;
             recognition.start();
             isStartedRef.current = true;
-            setTranscript('');
+            // 只有进入纯监听期时，我们清空原本遗留的字迹
+            if (roomState === 'LISTENING') setTranscript('');
           } catch (e) {
             console.error('STT start error:', e);
           }
-        }, 800);
+        }, roomState === 'SPEAKING' ? 50 : 800);
       }
     } else {
-      // 非 LISTENING 状态：立即停止录音
+      // 只有 PROCESSING（也就是网络死等期间）以及 ERROR 期间：立即彻底停止录音
       if (recognitionRef.current && isStartedRef.current) {
         try { recognitionRef.current.abort(); } catch (_) {}
         isStartedRef.current = false;

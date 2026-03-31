@@ -10,7 +10,7 @@ import VoiceRoom from './VoiceRoom';
 // 将 streaming 状态抽离到模块级别，使其在组件重渲染时持久存在
 let globalStreamingMsgId = null;
 
-const APP_VERSION = 'v2.4.0';
+const APP_VERSION = 'v2.5.0';
 
 export default function ChatRoom({ token, onLogout }) {
   const [sessions, setSessions] = useState([]);
@@ -652,6 +652,14 @@ export default function ChatRoom({ token, onLogout }) {
               setRevealedVoiceText('');
               if (!ttsEnabled) { setTtsEnabled(true); ttsEnabledRef.current = true; }
               handleSend(text);
+            }}
+            onInterrupt={(text) => {
+               // 打断机制：1. 立刻掐断当前 AI 废话喇叭；2. 终止大模型生成；3. 将用户插话发给后台开启新周天
+               handleStopAudio();
+               if (abortControllerRef.current) abortControllerRef.current.abort();
+               setRevealedVoiceText('');
+               if (!ttsEnabled) { setTtsEnabled(true); ttsEnabledRef.current = true; }
+               handleSend(text);
             }}
             onClose={(interruptOnly) => {
               if (interruptOnly === true) {
