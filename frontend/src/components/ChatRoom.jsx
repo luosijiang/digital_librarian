@@ -43,8 +43,6 @@ export default function ChatRoom({ token, onLogout }) {
   const ttsRateRef = useRef("+0%");
   const ttsEnabledRef = useRef(true);
   const isAudioPlayingRef = useRef(false);
-  // 与 audioQueueRef 并行维护的文字队列，保证文字随音频同步揭露
-  const voiceTextQueueRef = useRef([]);
 
   const handleRateChange = (rate) => {
     setTtsRate(rate);
@@ -269,39 +267,42 @@ export default function ChatRoom({ token, onLogout }) {
     }
   };
 
-  const pushToAudioQueue = async (rawText) => {
+  const pushToAudioQueue = (rawText) => {
     // 过滤掉所有可能被误读的 Markdown 符号、加减号、下划线以及常见的中英括号，保留纯文本与核心标点
     const text = rawText.replace(/[*#`~>_\-+=|\\^{}\[\]()（）《》「」【】]/g, '').trim();
     if (!text) return;
 
-    // 把「原始文本」同步插入文字队列（顺序与 audioQueueRef 严格对齐）
-    voiceTextQueueRef.current.push(text);
-    
+    // 同步把原始文本直接变成一个有完整生命周期的 Task（占位符）
+    const task = { text, url: null, ready: false, failed: false };
+    audioQueueRef.current.push(task);
+    setAudioQueueLength(prev => prev + 1);
     setPendingTtsCount(prev => prev + 1);
-    try {
-      const encodedText = encodeURIComponent(text);
-      const rate = ttsRateRef.current;
-      const res = await fetch(`${API_BASE}/tts?text=${encodedText}&rate=${encodeURIComponent(rate)}`);
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        audioQueueRef.current.push(url);
-        setAudioQueueLength(prev => prev + 1);
+
+    // 并发发起离线生成请求，但不改变数组结构中的强制排序
+    (async () => {
+      try {
+        const encodedText = encodeURIComponent(text);
+        const rate = ttsRateRef.current;
+        const res = await fetch(`${API_BASE}/tts?text=${encodedText}&rate=${encodeURIComponent(rate)}`);
+        if (res.ok) {
+          const blob = await res.blob();
+          task.url = URL.createObjectURL(blob);
+        } else {
+          task.failed = true;
+        }
+      } catch (e) {
+        console.error("Prefetch TTS Error:", e);
+        task.failed = true;
+      } finally {
+        task.ready = true;
+        setPendingTtsCount(prev => Math.max(0, prev - 1));
+        
+        // 任何管线准备好时，尝试向后步进（如果喇叭正好空闲着）
         if (!isAudioPlayingRef.current) {
           playNextAudio();
         }
-      } else {
-        // TTS 失败时，把对应文字队列中的占位也移除，避免错位
-        const idx = voiceTextQueueRef.current.lastIndexOf(text);
-        if (idx !== -1) voiceTextQueueRef.current.splice(idx, 1);
       }
-    } catch (e) {
-      console.error("Prefetch TTS Error:", e);
-      const idx = voiceTextQueueRef.current.lastIndexOf(text);
-      if (idx !== -1) voiceTextQueueRef.current.splice(idx, 1);
-    } finally {
-      setPendingTtsCount(prev => Math.max(0, prev - 1));
-    }
+    })();
   };
 
   const playNextAudio = () => {
@@ -310,18 +311,33 @@ export default function ChatRoom({ token, onLogout }) {
       setIsAudioPlaying(false);
       return;
     }
-    const url = audioQueueRef.current.shift();
-    // 与音频同步：取出对应的文字片段，追加到「已播报文字」
-    const spokenText = voiceTextQueueRef.current.shift();
-    if (spokenText) {
-      setRevealedVoiceText(prev => prev ? prev + spokenText : spokenText);
+
+    // 只窥探一号位：即使后面的句子下载完了，也必须死死等待第一句的音频生成
+    const nextTask = audioQueueRef.current[0];
+    if (!nextTask.ready) {
+      isAudioPlayingRef.current = false;
+      setIsAudioPlaying(false);
+      return;
     }
+
+    // 第一句已就绪（无论死活），正式出列
+    audioQueueRef.current.shift();
     setAudioQueueLength(prev => Math.max(0, prev - 1));
+
+    // 让屏幕上的数字馆长显现出对应的句子段落
+    setRevealedVoiceText(prev => prev ? prev + nextTask.text : nextTask.text);
+
+    // 如果下载失败了（网络波动、Edge-TTS抛错），则强行无缝跳过放音流程打捞下一句
+    if (nextTask.failed || !nextTask.url) {
+      playNextAudio();
+      return;
+    }
+
     if (audioRef.current) {
       if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
         URL.revokeObjectURL(audioRef.current.src);
       }
-      audioRef.current.src = url;
+      audioRef.current.src = nextTask.url;
       audioRef.current.load(); // 强制重载，确保移动端 Safari 正确接收新媒体源
       isAudioPlayingRef.current = true;
       setIsAudioPlaying(true);
@@ -342,7 +358,6 @@ export default function ChatRoom({ token, onLogout }) {
       audioRef.current.pause();
     }
     audioQueueRef.current = [];
-    voiceTextQueueRef.current = [];
     setAudioQueueLength(0);
     sentenceBufferRef.current = "";
     isAudioPlayingRef.current = false;
@@ -517,7 +532,6 @@ export default function ChatRoom({ token, onLogout }) {
               onClick={() => {
                 unlockAudio(); // 进入语音室时即刷新音频锁，确保用户手势当下生效
                 setRevealedVoiceText('');
-                voiceTextQueueRef.current = [];
                 setIsVoiceRoomOpen(true);
               }}
               className="w-9 h-9 flex items-center justify-center rounded-full text-[#444746] hover:bg-black/5 hover:text-[#1A73E8] transition-colors"
