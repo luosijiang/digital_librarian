@@ -20,6 +20,11 @@ export default function ChatRoom({ token, onLogout }) {
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isVoiceRoomOpen, setIsVoiceRoomOpen] = useState(false);
+  
+  // 用于向 VoiceRoom 精确同步 AI 的完整工作状态（包括在排队、在下载、在播放）
+  const [pendingTtsCount, setPendingTtsCount] = useState(0);
+  const [audioQueueLength, setAudioQueueLength] = useState(0);
+
   const [ttsRate, setTtsRate] = useState("+0%");
   const [isRateMenuOpen, setIsRateMenuOpen] = useState(false);
 
@@ -253,6 +258,7 @@ export default function ChatRoom({ token, onLogout }) {
     const text = rawText.replace(/[*#`~>_\-+=|\\^{}\[\]()（）《》「」【】]/g, '').trim();
     if (!text) return;
     
+    setPendingTtsCount(prev => prev + 1); // 记录有 TTS 请求正在下载
     // Asynchronous Blob Prefetching
     try {
       const encodedText = encodeURIComponent(text);
@@ -262,12 +268,15 @@ export default function ChatRoom({ token, onLogout }) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         audioQueueRef.current.push(url);
+        setAudioQueueLength(prev => prev + 1); // 同步状态给被动观察者
         if (!isAudioPlaying && (audioRef.current && audioRef.current.paused)) {
           playNextAudio();
         }
       }
     } catch (e) {
       console.error("Prefetch TTS Error:", e);
+    } finally {
+      setPendingTtsCount(prev => Math.max(0, prev - 1));
     }
   };
 
@@ -277,6 +286,7 @@ export default function ChatRoom({ token, onLogout }) {
       return;
     }
     const url = audioQueueRef.current.shift();
+    setAudioQueueLength(prev => Math.max(0, prev - 1));
     if (audioRef.current) {
       // Release old URL to avoid memory leak if it's a blob
       if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
@@ -303,6 +313,7 @@ export default function ChatRoom({ token, onLogout }) {
       audioRef.current.pause();
     }
     audioQueueRef.current = [];
+    setAudioQueueLength(0);
     sentenceBufferRef.current = "";
     setIsAudioPlaying(false);
   };
@@ -575,7 +586,7 @@ export default function ChatRoom({ token, onLogout }) {
           <VoiceRoom 
             messages={messages}
             isThinking={loading}
-            isSpeaking={isAudioPlaying}
+            isAiActive={loading || isAudioPlaying || audioQueueLength > 0 || pendingTtsCount > 0}
             onSend={(text) => {
               // 在语音房间必须开启播报才能完成闭环
               if (!ttsEnabled) setTtsEnabled(true);

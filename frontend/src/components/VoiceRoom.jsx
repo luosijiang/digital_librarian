@@ -1,17 +1,20 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, MicOff, AlertCircle } from 'lucide-react';
+import { X, MicOff, AlertCircle, Type, FastForward, Play } from 'lucide-react';
 
 export default function VoiceRoom({ 
   messages, 
   isThinking, 
-  isSpeaking, 
+  isAiActive, 
   onSend, 
   onClose 
 }) {
   const [roomState, setRoomState] = useState('INIT'); // INIT, LISTENING, PROCESSING, SPEAKING, ERROR
   const [transcript, setTranscript] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [displayedText, setDisplayedText] = useState('');
+  const [textSpeed, setTextSpeed] = useState(80); // ms per character
+
   
   const recognitionRef = useRef(null);
   const isStartedRef = useRef(false);
@@ -73,24 +76,23 @@ export default function VoiceRoom({
     return recognition;
   }, [onSend]);
 
-  // 从 ChatRoom 同步状态以处理自动流转
+  // 从 ChatRoom 同步精确工作状态进行全自动流转
   useEffect(() => {
-    if (isThinking) {
-      setRoomState('PROCESSING');
-    } else if (isSpeaking) {
-      setRoomState('SPEAKING');
+    if (isAiActive) {
+      setRoomState(isThinking ? 'PROCESSING' : 'SPEAKING');
     } else {
-      // 当不再思考且不再说话时，说明 AI 完成了上一轮回答，可以重新听
-      // 需要防止循环重启，确保是在 SPEAKING 刚结束时重启
+      // AI 完全空闲（既不在推演、也不排队、也不在说话）
       setRoomState(prev => {
         if (prev === 'SPEAKING' || prev === 'PROCESSING') {
-          setTranscript(''); // 清空上一轮的文字
+          // AI 刚刚回答完毕
+          setTranscript(''); 
+          setDisplayedText(''); // 清空旧打字机
           return 'LISTENING';
         }
         return prev;
       });
     }
-  }, [isThinking, isSpeaking]);
+  }, [isAiActive, isThinking]);
 
   // 状态机核心控制（通过 state 变化驱动硬件）
   useEffect(() => {
@@ -188,6 +190,38 @@ export default function VoiceRoom({
     ? [...messages].reverse().find(m => m.role === 'assistant')
     : null;
 
+  // 打字机效果 (Typewriter Effect)
+  useEffect(() => {
+    const fullText = latestAssistantMessage?.content || '';
+    
+    // 如果还没激活，或者刚刚切回聆听，重置打字机
+    if (!isAiActive) {
+      setDisplayedText('');
+      return;
+    }
+
+    if (fullText.length > displayedText.length) {
+      const timeoutId = setTimeout(() => {
+        setDisplayedText(fullText.slice(0, displayedText.length + 1));
+      }, textSpeed);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [latestAssistantMessage?.content, displayedText, textSpeed, isAiActive]);
+
+  const cycleTextSpeed = () => {
+    // 点击循环切换语速：80慢 -> 40中 -> 15快
+    setTextSpeed(prev => prev === 80 ? 40 : prev === 40 ? 15 : 80);
+  };
+
+  const getSpeedLabel = () => {
+     switch(textSpeed) {
+       case 80: return { label: '逐字沉浸', icon: <Type className="w-4 h-4" /> };
+       case 40: return { label: '同步语速', icon: <Play className="w-4 h-4" /> };
+       case 15: return { label: '思维快显', icon: <FastForward className="w-4 h-4" /> };
+       default: return { label: '自定义', icon: <Type className="w-4 h-4" /> };
+     }
+  };
+
   return (
     <motion.div 
       initial={{ opacity: 0 }}
@@ -262,17 +296,29 @@ export default function VoiceRoom({
                 </motion.p>
               )}
               
-              {/* AI 生成的文本 */}
+              {/* AI 生成的文本 (打字机效果) */}
               {(roomState === 'PROCESSING' || roomState === 'SPEAKING') && latestAssistantMessage && (
                 <motion.div
                   key="ai-text"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="bg-black/30 w-full max-w-2xl mx-auto rounded-3xl p-6 md:p-8 border border-white/10 backdrop-blur-xl max-h-[40vh] overflow-y-auto"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="w-full max-w-2xl mx-auto flex flex-col items-center"
                 >
-                  <p className="text-white text-lg md:text-2xl leading-relaxed tracking-wide">
-                    {latestAssistantMessage.content || "..."}
-                  </p>
+                  <div className="bg-black/30 w-full rounded-3xl p-6 md:p-8 border border-white/10 backdrop-blur-xl max-h-[40vh] overflow-y-auto min-h-[100px] shadow-2xl">
+                    <p className="text-white text-lg md:text-2xl leading-relaxed tracking-wide min-h-[2rem]">
+                      {displayedText || (roomState === 'PROCESSING' && <span className="opacity-50 animate-pulse">正在提取思绪...</span>)}
+                      <span className="inline-block w-2 bg-white/50 h-[1.2rem] ml-1 animate-pulse"></span>
+                    </p>
+                  </div>
+                  
+                  {/* 字幕速度控制器 */}
+                  <button 
+                    onClick={cycleTextSpeed}
+                    className="mt-4 flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-white/60 text-xs"
+                  >
+                    {getSpeedLabel().icon}
+                    <span>{getSpeedLabel().label}</span>
+                  </button>
                 </motion.div>
               )}
             </>
