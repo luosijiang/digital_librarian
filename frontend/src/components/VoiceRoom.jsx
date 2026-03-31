@@ -1,32 +1,32 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, MicOff, AlertCircle, Type, FastForward, Play } from 'lucide-react';
+import { X, Mic, MicOff, AlertCircle, RotateCcw } from 'lucide-react';
 
 export default function VoiceRoom({ 
-  messages, 
-  isThinking, 
-  isAiActive, 
+  isThinking,
+  isAiActive,
+  revealedVoiceText,  // 与音频严格同步的已播报文字
   onSend, 
   onClose 
 }) {
-  const [roomState, setRoomState] = useState('INIT'); // INIT, LISTENING, PROCESSING, SPEAKING, ERROR
+  // 核心状态机
+  const [roomState, setRoomState] = useState('INIT');
   const [transcript, setTranscript] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const [displayedText, setDisplayedText] = useState('');
-  const [textSpeed, setTextSpeed] = useState(80); // ms per character
+  const [errorType, setErrorType] = useState('');  // 'fatal' | 'retriable'
 
-  
   const recognitionRef = useRef(null);
   const isStartedRef = useRef(false);
+  const retryTimerRef = useRef(null);
 
-  // 初始化语音引擎
+  // ─── 语音识别引擎初始化 ──────────────────────────────────
   const createRecognition = useCallback(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return null;
 
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = true; // 开启实时过程识别
+    recognition.interimResults = true;
     recognition.lang = 'zh-CN';
     recognition.maxAlternatives = 1;
 
@@ -40,10 +40,8 @@ export default function VoiceRoom({
           interim += event.results[i][0].transcript;
         }
       }
-      
       if (final) {
         setTranscript(final);
-        // 发送给后端
         onSend(final);
         setRoomState('PROCESSING');
         isStartedRef.current = false;
@@ -53,22 +51,37 @@ export default function VoiceRoom({
     };
 
     recognition.onerror = (event) => {
-      console.error('VoiceRoom recognition error:', event.error);
-      if (event.error !== 'aborted') {
-        const errorText = event.error === 'not-allowed' ? '麦克风权限被拒绝' : `无法识别 (${event.error})`;
-        setErrorMsg(errorText);
-        setRoomState('ERROR');
-      }
+      console.error('VoiceRoom STT error:', event.error);
       isStartedRef.current = false;
+
+      if (event.error === 'aborted') return;          // 我们主动中止，忽略
+      if (event.error === 'no-speech') {              // 超时无人说话 → 自动重启
+        setRoomState(prev => prev === 'LISTENING' ? 'LISTENING' : prev);
+        return;
+      }
+      if (event.error === 'not-allowed') {
+        setErrorMsg('麦克风权限被拒绝，请在浏览器设置中允许麦克风访问');
+        setErrorType('fatal');
+        setRoomState('ERROR');
+        return;
+      }
+      // audio-capture / network 等可重试错误
+      setErrorMsg(`识别失败 (${event.error})，正在自动重试...`);
+      setErrorType('retriable');
+      setRoomState('ERROR');
+      // 1.5 秒后自动重试
+      retryTimerRef.current = setTimeout(() => {
+        setErrorMsg('');
+        setErrorType('');
+        setRoomState('LISTENING');
+      }, 1500);
     };
 
     recognition.onend = () => {
       isStartedRef.current = false;
-      // 如果没有切换到其他状态（比如没有任何人说话超时自动结束了），继续监听
-      setRoomState((prev) => {
-        if (prev === 'LISTENING' || prev === 'INIT') {
-          return 'LISTENING'; // 下一个 effect 会重启它
-        }
+      setRoomState(prev => {
+        // 如果还在听，说明是正常超时（no-speech），直接重启
+        if (prev === 'LISTENING') return 'LISTENING';
         return prev;
       });
     };
@@ -76,17 +89,14 @@ export default function VoiceRoom({
     return recognition;
   }, [onSend]);
 
-  // 从 ChatRoom 同步精确工作状态进行全自动流转
+  // ─── 从 ChatRoom 同步 AI 工作状态 ─────────────────────────
   useEffect(() => {
     if (isAiActive) {
       setRoomState(isThinking ? 'PROCESSING' : 'SPEAKING');
     } else {
-      // AI 完全空闲（既不在推演、也不排队、也不在说话）
       setRoomState(prev => {
         if (prev === 'SPEAKING' || prev === 'PROCESSING') {
-          // AI 刚刚回答完毕
-          setTranscript(''); 
-          setDisplayedText(''); // 清空旧打字机
+          setTranscript('');
           return 'LISTENING';
         }
         return prev;
@@ -94,38 +104,35 @@ export default function VoiceRoom({
     }
   }, [isAiActive, isThinking]);
 
-  // 状态机核心控制（通过 state 变化驱动硬件）
+  // ─── 状态机驱动麦克风硬件 ────────────────────────────────
   useEffect(() => {
     let timeoutId;
 
     if (roomState === 'LISTENING') {
       const recognition = createRecognition();
       if (!recognition) {
-        setErrorMsg('当前浏览器不支持沉浸式语音模式');
+        setErrorMsg('当前浏览器不支持语音识别，请使用 Safari 或 Chrome');
+        setErrorType('fatal');
         setRoomState('ERROR');
         return;
       }
-      
       if (!isStartedRef.current) {
-        // 增加 800ms 缓冲延迟：防止 iOS Safari/WebKit 在上一轮 TTS 音频刚结束时，
-        // 麦克风与扬声器硬件通道死锁导致暴毙引发 (audio-capture) 故障
+        // 800ms 缓冲：让 iOS 硬件完全释放扬声器通道后再占用麦克风
         timeoutId = setTimeout(() => {
           try {
             recognitionRef.current = recognition;
             recognition.start();
             isStartedRef.current = true;
-            setTranscript(''); // 重置 UI 上的用户话语
+            setTranscript('');
           } catch (e) {
-            console.error("Start error:", e);
+            console.error('STT start error:', e);
           }
         }, 800);
       }
     } else {
-      // 如果进入了其他状态（处理中、说话中、出错），则停止录音
+      // 非 LISTENING 状态：立即停止录音
       if (recognitionRef.current && isStartedRef.current) {
-        try {
-          recognitionRef.current.abort(); // 立即掐断，不触发 onresult
-        } catch (e) {}
+        try { recognitionRef.current.abort(); } catch (_) {}
         isStartedRef.current = false;
       }
     }
@@ -138,223 +145,182 @@ export default function VoiceRoom({
     };
   }, [roomState, createRecognition]);
 
-  // 启动即进入 LISTENING
-  useEffect(() => {
-    setRoomState('LISTENING');
-  }, []);
+  // 清理 retry timer
+  useEffect(() => () => clearTimeout(retryTimerRef.current), []);
 
-  // 视觉反馈动效
-  const getOrbAnimation = () => {
-    switch(roomState) {
-      case 'LISTENING':
-        return { 
-          scale: [1, 1.1, 1], 
-          opacity: [0.3, 0.6, 0.3],
-          filter: ['blur(40px)', 'blur(50px)', 'blur(40px)']
-        };
-      case 'PROCESSING':
-        return { 
-          rotate: [0, 360],
-          scale: [1, 1.2, 1],
-          opacity: [0.5, 0.8, 0.5],
-          filter: 'blur(30px)'
-        };
-      case 'SPEAKING':
-        return { 
-          scale: [0.9, 1.3, 0.9, 1.1, 1], 
-          opacity: [0.4, 0.9, 0.4],
-          filter: 'blur(60px)'
-        };
-      case 'ERROR':
-        return { scale: 1, opacity: 0.1, filter: 'blur(20px)' };
-      default:
-        return { scale: 1, opacity: 0 };
+  // ─── 初始化进 LISTENING ───────────────────────────────────
+  useEffect(() => { setRoomState('LISTENING'); }, []);
+
+  // ─── 视觉辅助函数 ─────────────────────────────────────────
+  const getOrbColor = () => {
+    switch (roomState) {
+      case 'LISTENING':   return '#3B82F6';   // blue
+      case 'PROCESSING':  return '#A855F7';   // purple
+      case 'SPEAKING':    return '#10B981';   // emerald
+      case 'ERROR':       return '#EF4444';   // red
+      default:            return '#6B7280';
     }
   };
 
-  const getOrbColor = () => {
-    switch(roomState) {
-      case 'LISTENING': return 'bg-blue-400';
-      case 'PROCESSING': return 'bg-purple-500';
-      case 'SPEAKING': return 'bg-emerald-400';
-      case 'ERROR': return 'bg-red-500';
-      default: return 'bg-gray-500';
+  const getOrbScale = () => {
+    switch (roomState) {
+      case 'LISTENING':  return [1, 1.08, 1];
+      case 'PROCESSING': return [1, 1.18, 0.95, 1.1, 1];
+      case 'SPEAKING':   return [1, 1.25, 0.9, 1.15, 1];
+      case 'ERROR':      return 0.8;
+      default:           return 1;
     }
   };
 
   const getStatusText = () => {
-    switch(roomState) {
-      case 'LISTENING': return '在听...';
-      case 'PROCESSING': return '思考中...';
-      case 'SPEAKING': return '回答中...';
-      case 'ERROR': return '出现错误';
-      default: return '准备好';
+    switch (roomState) {
+      case 'LISTENING':   return '在听...';
+      case 'PROCESSING':  return '思考中...';
+      case 'SPEAKING':    return '回答中...';
+      case 'ERROR':       return errorType === 'retriable' ? '重试中...' : '出现错误';
+      default:            return '';
     }
   };
 
-  // 取屏幕可见的最后一条回答
-  const latestAssistantMessage = messages
-    ? [...messages].reverse().find(m => m.role === 'assistant')
-    : null;
-
-  // 打字机效果 (Typewriter Effect)
-  useEffect(() => {
-    const fullText = latestAssistantMessage?.content || '';
-    
-    // 如果还没激活，或者刚刚切回聆听，重置打字机
-    if (!isAiActive) {
-      setDisplayedText('');
-      return;
-    }
-
-    if (fullText.length > displayedText.length) {
-      const timeoutId = setTimeout(() => {
-        setDisplayedText(fullText.slice(0, displayedText.length + 1));
-      }, textSpeed);
-      return () => clearTimeout(timeoutId);
-    }
-  }, [latestAssistantMessage?.content, displayedText, textSpeed, isAiActive]);
-
-  const cycleTextSpeed = () => {
-    // 点击循环切换语速：80慢 -> 40中 -> 15快
-    setTextSpeed(prev => prev === 80 ? 40 : prev === 40 ? 15 : 80);
+  const handleManualRetry = () => {
+    clearTimeout(retryTimerRef.current);
+    setErrorMsg('');
+    setErrorType('');
+    setRoomState('LISTENING');
   };
 
-  const getSpeedLabel = () => {
-     switch(textSpeed) {
-       case 80: return { label: '逐字沉浸', icon: <Type className="w-4 h-4" /> };
-       case 40: return { label: '同步语速', icon: <Play className="w-4 h-4" /> };
-       case 15: return { label: '思维快显', icon: <FastForward className="w-4 h-4" /> };
-       default: return { label: '自定义', icon: <Type className="w-4 h-4" /> };
-     }
+  const handleInterrupt = () => {
+    if (onClose) onClose(true);
   };
+
+  const orbDuration = roomState === 'PROCESSING' ? 2.5 : roomState === 'SPEAKING' ? 1.2 : 2.5;
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.5 }}
-      // 完全遮盖层，暗色沉浸风格
-      className="fixed inset-0 z-50 bg-[#0A0A0A] flex flex-col pt-12 pb-8 px-6 overflow-hidden touch-none"
+      transition={{ duration: 0.4 }}
+      className="fixed inset-0 z-50 bg-[#080810] flex flex-col overflow-hidden touch-none select-none"
+      style={{ paddingTop: 'calc(env(safe-area-inset-top) + 3rem)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 2rem)' }}
     >
-      {/* 动态光球：核心视觉 */}
+      {/* ── 光球背景 ── */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <motion.div
-           animate={getOrbAnimation()}
-           transition={{ 
-             repeat: Infinity, 
-             duration: roomState === 'PROCESSING' ? 3 : (roomState === 'SPEAKING' ? 1.5 : 2), 
-             ease: "easeInOut" 
-           }}
-           className={`w-64 h-64 rounded-full ${getOrbColor()} mix-blend-screen opacity-50`}
+          animate={{ scale: getOrbScale(), opacity: roomState === 'ERROR' ? [0.06] : [0.25, 0.55, 0.25] }}
+          transition={{ repeat: Infinity, duration: orbDuration, ease: 'easeInOut' }}
+          style={{ backgroundColor: getOrbColor(), width: 280, height: 280, borderRadius: '50%', filter: 'blur(60px)' }}
         />
-        {/* 第二层内球，增加质感 */}
         <motion.div
-           animate={getOrbAnimation()}
-           transition={{ 
-               repeat: Infinity, 
-               duration: roomState === 'PROCESSING' ? 2 : (roomState === 'SPEAKING' ? 1 : 1.5), 
-               ease: "easeInOut",
-               delay: 0.2
-           }}
-           className={`absolute w-32 h-32 rounded-full ${getOrbColor()} mix-blend-screen opacity-70`}
+          animate={{ scale: getOrbScale(), opacity: roomState === 'ERROR' ? [0.04] : [0.4, 0.8, 0.4] }}
+          transition={{ repeat: Infinity, duration: orbDuration * 0.75, ease: 'easeInOut', delay: 0.3 }}
+          className="absolute"
+          style={{ backgroundColor: getOrbColor(), width: 140, height: 140, borderRadius: '50%', filter: 'blur(30px)' }}
         />
       </div>
 
-      <div className="flex justify-between items-center z-10 w-full mb-auto relative">
-        <div className="px-3 py-1 rounded-full bg-white/10 border border-white/20 backdrop-blur-md">
+      {/* ── 顶部栏 ── */}
+      <div className="relative z-10 flex justify-between items-center px-6">
+        <div className="px-3 py-1.5 rounded-full bg-white/10 border border-white/15 backdrop-blur-md">
           <span className="text-white/80 text-xs font-medium tracking-widest">{getStatusText()}</span>
         </div>
-        
-        <button 
-          onClick={onClose}
+        <button
+          onClick={() => onClose && onClose(false)}
           className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-white"
         >
           <X className="w-5 h-5" />
         </button>
       </div>
 
-      {/* 文本展示区 */}
-      <div className="z-10 w-full relative mb-12 flex flex-col justify-end space-y-6 flex-1 min-h-0">
+      {/* ── 文本展示区 ── */}
+      <div className="relative z-10 flex-1 min-h-0 flex flex-col justify-end px-6 py-4 space-y-4">
         <AnimatePresence mode="popLayout">
-          {errorMsg ? (
+          {/* 错误提示 — 仅作为非覆盖的提示条，不遮挡整个 UI */}
+          {errorMsg && (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
+              key="error-banner"
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="text-red-400 bg-red-900/30 px-4 py-3 rounded-2xl text-center self-center flex items-center gap-2 border border-red-500/20"
+              exit={{ opacity: 0, y: 8 }}
+              className="self-center flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-red-900/40 border border-red-500/30 text-red-300 text-sm"
             >
-              <AlertCircle className="w-4 h-4" />
-              <span className="text-sm">{errorMsg}</span>
-              <button onClick={() => setRoomState('LISTENING')} className="ml-2 underline hover:text-red-300">重试</button>
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{errorMsg}</span>
+              {errorType === 'fatal' && (
+                <button onClick={handleManualRetry} className="ml-2 flex items-center gap-1 underline hover:text-red-200">
+                  <RotateCcw className="w-3 h-3" /> 重试
+                </button>
+              )}
             </motion.div>
-          ) : (
-            <>
-              {/* STT 用户识别出的文本 */}
-              {(transcript || roomState === 'LISTENING') && (
-                <motion.p
-                  key="user-text"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0 }}
-                  className="text-white/60 text-lg md:text-xl font-light leading-relaxed max-w-2xl text-center mx-auto"
-                >
-                  {transcript || (roomState === 'LISTENING' && "...")}
-                </motion.p>
-              )}
-              
-              {/* AI 生成的文本 (打字机效果) */}
-              {(roomState === 'PROCESSING' || roomState === 'SPEAKING') && latestAssistantMessage && (
-                <motion.div
-                  key="ai-text"
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="w-full max-w-2xl mx-auto flex flex-col items-center"
-                >
-                  <div className="bg-black/30 w-full rounded-3xl p-6 md:p-8 border border-white/10 backdrop-blur-xl max-h-[40vh] overflow-y-auto min-h-[100px] shadow-2xl">
-                    <p className="text-white text-lg md:text-2xl leading-relaxed tracking-wide min-h-[2rem]">
-                      {displayedText || (roomState === 'PROCESSING' && <span className="opacity-50 animate-pulse">正在提取思绪...</span>)}
-                      <span className="inline-block w-2 bg-white/50 h-[1.2rem] ml-1 animate-pulse"></span>
-                    </p>
-                  </div>
-                  
-                  {/* 字幕速度控制器 */}
-                  <button 
-                    onClick={cycleTextSpeed}
-                    className="mt-4 flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 transition-colors text-white/60 text-xs"
-                  >
-                    {getSpeedLabel().icon}
-                    <span>{getSpeedLabel().label}</span>
-                  </button>
-                </motion.div>
-              )}
-            </>
+          )}
+
+          {/* 用户说的话 */}
+          {(transcript || roomState === 'LISTENING') && !isAiActive && (
+            <motion.p
+              key="user-transcript"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="text-white/50 text-base md:text-lg font-light leading-relaxed text-center"
+            >
+              {transcript || '...'}
+            </motion.p>
+          )}
+
+          {/* AI 回复文字 — 严格与音频同步揭露 */}
+          {isAiActive && (
+            <motion.div
+              key="ai-response"
+              initial={{ opacity: 0, scale: 0.97 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="w-full max-w-2xl mx-auto"
+            >
+              <div className="bg-black/35 rounded-3xl p-6 md:p-8 border border-white/10 backdrop-blur-xl max-h-[45vh] overflow-y-auto shadow-2xl">
+                <p className="text-white text-lg md:text-xl leading-relaxed tracking-wide">
+                  {revealedVoiceText || (
+                    roomState === 'PROCESSING'
+                      ? <span className="text-white/40 animate-pulse">正在提取思绪...</span>
+                      : null
+                  )}
+                  {/* 跳动光标 */}
+                  <span className="inline-block w-[2px] h-[1.1em] bg-white/60 ml-1 align-middle animate-pulse" />
+                </p>
+              </div>
+            </motion.div>
           )}
         </AnimatePresence>
       </div>
-      
-      {/* 底部功能条：可选的手动打断/重试并不能自动进入的 fallback */}
-      <div className="z-10 flex justify-center w-full">
-        {roomState === 'ERROR' || roomState === 'SPEAKING' ? (
+
+      {/* ── 底部操作区 ── */}
+      <div className="relative z-10 flex justify-center items-center gap-8 px-6">
+        {roomState === 'SPEAKING' ? (
+          // 打断按钮
           <button
-             onClick={() => {
-                 // 如果 AI 还在说话，直接清空队列来打断它
-                 if (onClose) onClose(true); // 通知上层打断 TTS
-             }}
-             className="w-16 h-16 rounded-full bg-white/5 border border-white/20 hover:bg-white/10 flex items-center justify-center transition-all text-white/70"
+            onClick={handleInterrupt}
+            className="w-16 h-16 rounded-full bg-white/8 border border-white/20 hover:bg-white/15 flex items-center justify-center transition-all text-white/70"
           >
-             {roomState === 'SPEAKING' ? <MicOff className="w-6 h-6" /> : "重试"}
+            <MicOff className="w-6 h-6" />
+          </button>
+        ) : roomState === 'LISTENING' ? (
+          // 呼吸灯
+          <div className="w-16 h-16 rounded-full flex items-center justify-center">
+            <motion.div
+              animate={{ scale: [1, 1.4, 1], opacity: [0.5, 1, 0.5] }}
+              transition={{ repeat: Infinity, duration: 1.5, ease: 'easeInOut' }}
+              className="w-4 h-4 bg-blue-400 rounded-full"
+            />
+          </div>
+        ) : roomState === 'ERROR' && errorType === 'fatal' ? (
+          <button
+            onClick={handleManualRetry}
+            className="w-16 h-16 rounded-full bg-white/8 border border-white/20 hover:bg-white/15 flex items-center justify-center text-white/70"
+          >
+            <RotateCcw className="w-6 h-6" />
           </button>
         ) : (
-          <div className="w-16 h-16 rounded-full flex items-center justify-center">
-            {/* 预留麦克风图标或呼吸灯指引 */}
-            {roomState === 'LISTENING' && (
-               <div className="w-3 h-3 bg-blue-400 rounded-full animate-ping" />
-            )}
-          </div>
+          <div className="w-16 h-16" />
         )}
       </div>
-
     </motion.div>
   );
 }

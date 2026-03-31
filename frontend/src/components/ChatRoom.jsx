@@ -10,6 +10,8 @@ import VoiceRoom from './VoiceRoom';
 // 将 streaming 状态抽离到模块级别，使其在组件重渲染时持久存在
 let globalStreamingMsgId = null;
 
+const APP_VERSION = 'v2.4.0';
+
 export default function ChatRoom({ token, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [currentSessionId, setCurrentSessionId] = useState(null);
@@ -24,6 +26,8 @@ export default function ChatRoom({ token, onLogout }) {
   // 用于向 VoiceRoom 精确同步 AI 的完整工作状态（包括在排队、在下载、在播放）
   const [pendingTtsCount, setPendingTtsCount] = useState(0);
   const [audioQueueLength, setAudioQueueLength] = useState(0);
+  // 文字与语音同步：已经「说出」的文字（随音频逐句揭露）
+  const [revealedVoiceText, setRevealedVoiceText] = useState('');
 
   const [ttsRate, setTtsRate] = useState("+0%");
   const [isRateMenuOpen, setIsRateMenuOpen] = useState(false);
@@ -39,6 +43,8 @@ export default function ChatRoom({ token, onLogout }) {
   const ttsRateRef = useRef("+0%");
   const ttsEnabledRef = useRef(true);
   const isAudioPlayingRef = useRef(false);
+  // 与 audioQueueRef 并行维护的文字队列，保证文字随音频同步揭露
+  const voiceTextQueueRef = useRef([]);
 
   const handleRateChange = (rate) => {
     setTtsRate(rate);
@@ -267,9 +273,11 @@ export default function ChatRoom({ token, onLogout }) {
     // 过滤掉所有可能被误读的 Markdown 符号、加减号、下划线以及常见的中英括号，保留纯文本与核心标点
     const text = rawText.replace(/[*#`~>_\-+=|\\^{}\[\]()（）《》「」【】]/g, '').trim();
     if (!text) return;
+
+    // 把「原始文本」同步插入文字队列（顺序与 audioQueueRef 严格对齐）
+    voiceTextQueueRef.current.push(text);
     
-    setPendingTtsCount(prev => prev + 1); // 记录有 TTS 请求正在下载
-    // Asynchronous Blob Prefetching
+    setPendingTtsCount(prev => prev + 1);
     try {
       const encodedText = encodeURIComponent(text);
       const rate = ttsRateRef.current;
@@ -278,14 +286,19 @@ export default function ChatRoom({ token, onLogout }) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         audioQueueRef.current.push(url);
-        setAudioQueueLength(prev => prev + 1); // 同步状态给被动观察者
-        // 绝对避免闭包旧状态和微任务污染，严格通过 Ref 锁定单一播放管线
+        setAudioQueueLength(prev => prev + 1);
         if (!isAudioPlayingRef.current) {
           playNextAudio();
         }
+      } else {
+        // TTS 失败时，把对应文字队列中的占位也移除，避免错位
+        const idx = voiceTextQueueRef.current.lastIndexOf(text);
+        if (idx !== -1) voiceTextQueueRef.current.splice(idx, 1);
       }
     } catch (e) {
       console.error("Prefetch TTS Error:", e);
+      const idx = voiceTextQueueRef.current.lastIndexOf(text);
+      if (idx !== -1) voiceTextQueueRef.current.splice(idx, 1);
     } finally {
       setPendingTtsCount(prev => Math.max(0, prev - 1));
     }
@@ -298,24 +311,25 @@ export default function ChatRoom({ token, onLogout }) {
       return;
     }
     const url = audioQueueRef.current.shift();
+    // 与音频同步：取出对应的文字片段，追加到「已播报文字」
+    const spokenText = voiceTextQueueRef.current.shift();
+    if (spokenText) {
+      setRevealedVoiceText(prev => prev ? prev + spokenText : spokenText);
+    }
     setAudioQueueLength(prev => Math.max(0, prev - 1));
     if (audioRef.current) {
-      // Release old URL to avoid memory leak if it's a blob
       if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
         URL.revokeObjectURL(audioRef.current.src);
       }
-      
       audioRef.current.src = url;
       isAudioPlayingRef.current = true;
       setIsAudioPlaying(true);
-      
       const playPromise = audioRef.current.play();
       if (playPromise !== undefined) {
         playPromise.catch(e => {
           console.error("Playback error:", e);
           isAudioPlayingRef.current = false;
           setIsAudioPlaying(false);
-          // 如果某句话被浏览器拦截或加载失败，跳过并尝试播放下一句
           playNextAudio();
         });
       }
@@ -327,10 +341,12 @@ export default function ChatRoom({ token, onLogout }) {
       audioRef.current.pause();
     }
     audioQueueRef.current = [];
+    voiceTextQueueRef.current = [];
     setAudioQueueLength(0);
     sentenceBufferRef.current = "";
     isAudioPlayingRef.current = false;
     setIsAudioPlaying(false);
+    setRevealedVoiceText('');
   };
 
   const onTogglePlayback = () => {
@@ -484,6 +500,7 @@ export default function ChatRoom({ token, onLogout }) {
             </button>
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 text-xl font-semibold select-none hidden sm:inline-block">✨</span>
             <h1 className="text-lg font-medium text-[#1F1F1F] tracking-tight">数字馆长模型</h1>
+            <span className="text-[10px] font-mono text-[#444746] opacity-50 tracking-wider select-none hidden md:inline-block">{APP_VERSION}</span>
           </div>
           <div className="flex items-center gap-2 md:gap-3">
             {loading && (
@@ -607,12 +624,13 @@ export default function ChatRoom({ token, onLogout }) {
       <AnimatePresence>
         {isVoiceRoomOpen && (
           <VoiceRoom 
-            messages={messages}
             isThinking={loading}
             isAiActive={loading || isAudioPlaying || audioQueueLength > 0 || pendingTtsCount > 0}
+            revealedVoiceText={revealedVoiceText}
             onSend={(text) => {
-              // 在语音房间必须开启播报才能完成闭环
-              if (!ttsEnabled) setTtsEnabled(true);
+              // 进入沉浸语音室时先清空上轮已说文字
+              setRevealedVoiceText('');
+              if (!ttsEnabled) { setTtsEnabled(true); ttsEnabledRef.current = true; }
               handleSend(text);
             }}
             onClose={(interruptOnly) => {
