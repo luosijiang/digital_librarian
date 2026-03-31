@@ -37,6 +37,7 @@ export default function ChatRoom({ token, onLogout }) {
   const audioRef = useRef(null);
   const sentenceBufferRef = useRef("");
   const ttsRateRef = useRef("+0%");
+  const ttsEnabledRef = useRef(true);
 
   const handleRateChange = (rate) => {
     setTtsRate(rate);
@@ -57,6 +58,13 @@ export default function ChatRoom({ token, onLogout }) {
     loadingRef.current = val;
     setLoading(val);
   }, []);
+
+  useEffect(() => {
+    if (isVoiceRoomOpen && !ttsEnabledRef.current) {
+      setTtsEnabled(true);
+      ttsEnabledRef.current = true;
+    }
+  }, [isVoiceRoomOpen]);
 
   useEffect(() => {
     fetchSessions();
@@ -199,8 +207,9 @@ export default function ChatRoom({ token, onLogout }) {
           const { done, value } = await reader.read();
           if (done) {
             // 最后如果还有剩下的没停顿的词，也抛进队列
-            if (sentenceBufferRef.current.trim() && ttsEnabled) {
-               pushToAudioQueue(sentenceBufferRef.current);
+            const remaining = sentenceBufferRef.current.trim();
+            if (remaining && ttsEnabledRef.current) {
+               pushToAudioQueue(remaining);
                sentenceBufferRef.current = "";
             }
             break;
@@ -226,11 +235,11 @@ export default function ChatRoom({ token, onLogout }) {
                 );
                 
                 // 语音断句缓存拼接
-                if (ttsEnabled) {
+                if (ttsEnabledRef.current) {
                   sentenceBufferRef.current += data.chunk;
                   // 用正则寻找最近的标点符号截断
-                  const match = sentenceBufferRef.current.match(/([。！？；.!?\n]+)/);
-                  if (match) {
+                  let match;
+                  while ((match = sentenceBufferRef.current.match(/([。！？；.!?\n]+)/))) {
                     const splitIndex = match.index + match[0].length;
                     const sentence = sentenceBufferRef.current.slice(0, splitIndex);
                     sentenceBufferRef.current = sentenceBufferRef.current.slice(splitIndex);
@@ -269,7 +278,8 @@ export default function ChatRoom({ token, onLogout }) {
         const url = URL.createObjectURL(blob);
         audioQueueRef.current.push(url);
         setAudioQueueLength(prev => prev + 1); // 同步状态给被动观察者
-        if (!isAudioPlaying && (audioRef.current && audioRef.current.paused)) {
+        // 只依赖最新的原生 HTMLMediaElement.paused 属性
+        if (audioRef.current && audioRef.current.paused) {
           playNextAudio();
         }
       }
@@ -334,6 +344,7 @@ export default function ChatRoom({ token, onLogout }) {
 
   const handleToggleTts = (enabled) => {
     setTtsEnabled(enabled);
+    ttsEnabledRef.current = enabled;
     if (!enabled) {
       audioQueueRef.current = [];
       sentenceBufferRef.current = "";
