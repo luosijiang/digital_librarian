@@ -35,25 +35,34 @@ export default function VoiceControl({ onResult, onUnlock }) {
     }
   }, [onResult]);
 
-  const handlePointerDown = () => {
+  const handleStart = (e) => {
+    e.preventDefault(); // 阻止长按选中、右键菜单
     if (onUnlock) onUnlock();
-    if (!recognitionRef.current) return alert("当前浏览器不支持 Web Speech API");
+    if (!recognitionRef.current) {
+      alert('当前浏览器不支持语音输入（微信/微博等 App 内置浏览器不支持）');
+      return;
+    }
     try {
       recognitionRef.current.start();
       setIsRecording(true);
     } catch (e) {
-      // In case already started
+      // already started
     }
   };
 
-  const handlePointerUp = () => {
+  const handleStop = (e) => {
+    if (e) e.preventDefault();
     if (recognitionRef.current && isRecording) {
       recognitionRef.current.stop();
     }
   };
 
   return (
-    <div className="relative flex items-center justify-center h-[44px] w-[44px]">
+    <div
+      className="relative flex items-center justify-center h-[44px] w-[44px]"
+      // 彻底禁止容器内的文字选中和长按菜单
+      style={{ userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation' }}
+    >
       {isRecording && (
         <motion.div
           animate={{ scale: [1, 1.4, 1], opacity: [0.1, 0.2, 0.1] }}
@@ -62,17 +71,19 @@ export default function VoiceControl({ onResult, onUnlock }) {
         />
       )}
       <button
-        onPointerDown={handlePointerDown}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
-        className={`relative z-10 w-full h-full rounded-full flex items-center justify-center transition-all duration-200 ${
-          isRecording 
-            ? 'bg-[#1A73E8] text-white shadow-md scale-105' 
+        onPointerDown={handleStart}
+        onPointerUp={handleStop}
+        onPointerLeave={handleStop}
+        onPointerCancel={handleStop}
+        onContextMenu={(e) => e.preventDefault()} // 阻止长按弹出系统菜单
+        className={`relative z-10 w-full h-full rounded-full flex items-center justify-center transition-all duration-200 select-none ${
+          isRecording
+            ? 'bg-[#1A73E8] text-white shadow-md scale-105'
             : 'bg-transparent text-[#444746] hover:bg-black/5'
         }`}
         title="长按进行语音提问"
       >
-        <Mic className={`w-[20px] h-[20px] ${isRecording ? 'opacity-100' : 'opacity-80'}`} />
+        <Mic className={`w-[20px] h-[20px] pointer-events-none ${isRecording ? 'opacity-100' : 'opacity-80'}`} />
       </button>
     </div>
   );

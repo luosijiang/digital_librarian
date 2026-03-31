@@ -6,36 +6,46 @@ import ChatRoom from './components/ChatRoom';
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
 
-  // 核心方案：visualViewport.height 是唯一能准确反映"肉眼可见区域"的 API
-  // 它会排除浏览器地址栏、底部导航栏、微信标题栏、键盘等所有系统 UI
+  // 高度管理策略：
+  // 1. 初始化时精确测量真实可见高度（用 visualViewport 排除浏览器工具栏）
+  // 2. 检测到"高度大幅缩小"（键盘弹出）时"不"重新调整，让浏览器自行处理滚动
+  // 3. 检测到屏幕宽度变化（横竖屏切换）时更新
   useEffect(() => {
-    const setRealHeight = () => {
-      // visualViewport.height 优先，它才是真实可见高度
-      // innerHeight 在微信/Chrome 安卓版中会包含底部导航栏空间，不可靠
-      const vh = (window.visualViewport?.height) ?? window.innerHeight;
-      document.documentElement.style.setProperty('--app-height', `${Math.floor(vh)}px`);
+    let lastWidth = window.screen.width;
+    let lockedHeight = null;
+    
+    const applyHeight = (force = false) => {
+      const vh = window.visualViewport?.height ?? window.innerHeight;
+      const currentWidth = window.screen.width;
+      const widthChanged = currentWidth !== lastWidth;
+      
+      if (!lockedHeight || widthChanged || force) {
+        // 初始化或旋转屏幕时，锁定新高度
+        lockedHeight = Math.floor(vh);
+        lastWidth = currentWidth;
+        document.documentElement.style.setProperty('--app-height', `${lockedHeight}px`);
+      }
+      // 高度变小（键盘弹出）时：不更新，让浏览器原生处理聚焦滚动
     };
     
-    setRealHeight();
+    applyHeight(true);
     
-    // visualViewport 的事件更精准（包含键盘弹出/收起同步）
+    const handleResize = () => applyHeight(false);
+    
     if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', setRealHeight);
-      window.visualViewport.addEventListener('scroll', setRealHeight);
+      window.visualViewport.addEventListener('resize', handleResize);
     } else {
-      window.addEventListener('resize', setRealHeight);
+      window.addEventListener('resize', handleResize);
     }
     
-    // 延迟补偿：浏览器工具栏动画结束后再测一次
-    const t1 = setTimeout(setRealHeight, 100);
-    const t2 = setTimeout(setRealHeight, 500);
+    const t1 = setTimeout(() => applyHeight(true), 150);
+    const t2 = setTimeout(() => applyHeight(true), 600);
     
     return () => {
       if (window.visualViewport) {
-        window.visualViewport.removeEventListener('resize', setRealHeight);
-        window.visualViewport.removeEventListener('scroll', setRealHeight);
+        window.visualViewport.removeEventListener('resize', handleResize);
       } else {
-        window.removeEventListener('resize', setRealHeight);
+        window.removeEventListener('resize', handleResize);
       }
       clearTimeout(t1);
       clearTimeout(t2);
