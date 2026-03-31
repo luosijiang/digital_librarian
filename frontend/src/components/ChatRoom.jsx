@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LogOut, ArrowUp, Plus, MessageSquare, Trash2, Menu, Settings, Check, X } from 'lucide-react';
+import { LogOut, ArrowUp, Plus, MessageSquare, Trash2, Menu, Settings, Check, X, Headphones } from 'lucide-react';
 import { API_BASE } from '../api';
 import MessageList from './MessageList';
 import VoiceControl from './VoiceControl';
 import VoiceToggle from './VoiceToggle';
+import VoiceRoom from './VoiceRoom';
 
 // 将 streaming 状态抽离到模块级别，使其在组件重渲染时持久存在
 let globalStreamingMsgId = null;
@@ -18,6 +19,7 @@ export default function ChatRoom({ token, onLogout }) {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isVoiceRoomOpen, setIsVoiceRoomOpen] = useState(false);
   const [ttsRate, setTtsRate] = useState("+0%");
   const [isRateMenuOpen, setIsRateMenuOpen] = useState(false);
 
@@ -296,6 +298,15 @@ export default function ChatRoom({ token, onLogout }) {
     }
   };
 
+  const handleStopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+    audioQueueRef.current = [];
+    sentenceBufferRef.current = "";
+    setIsAudioPlaying(false);
+  };
+
   const onTogglePlayback = () => {
     if (!audioRef.current) return;
     if (isAudioPlaying) {
@@ -450,6 +461,14 @@ export default function ChatRoom({ token, onLogout }) {
               </div>
             )}
             
+            <button
+              onClick={() => setIsVoiceRoomOpen(true)}
+              className="w-9 h-9 flex items-center justify-center rounded-full text-[#444746] hover:bg-black/5 hover:text-[#1A73E8] transition-colors"
+              title="进入沉浸式语音对话模式"
+            >
+              <Headphones className="w-[18px] h-[18px]" />
+            </button>
+
             <div className="relative">
               <button 
                 onClick={() => setIsRateMenuOpen(!isRateMenuOpen)}
@@ -550,6 +569,31 @@ export default function ChatRoom({ token, onLogout }) {
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {isVoiceRoomOpen && (
+          <VoiceRoom 
+            messages={messages}
+            isThinking={loading}
+            isSpeaking={isAudioPlaying}
+            onSend={(text) => {
+              // 在语音房间必须开启播报才能完成闭环
+              if (!ttsEnabled) setTtsEnabled(true);
+              handleSend(text);
+            }}
+            onClose={(interruptOnly) => {
+              if (interruptOnly === true) {
+                 handleStopAudio();
+                 if (abortControllerRef.current) abortControllerRef.current.abort();
+              } else {
+                 setIsVoiceRoomOpen(false);
+                 handleStopAudio();
+                 if (abortControllerRef.current) abortControllerRef.current.abort();
+              }
+            }}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
