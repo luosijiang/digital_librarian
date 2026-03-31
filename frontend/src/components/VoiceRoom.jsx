@@ -19,18 +19,33 @@ export default function VoiceRoom({
   const recognitionRef = useRef(null);
   const isStartedRef = useRef(false);
   const retryTimerRef = useRef(null);
-  const roomStateRef = useRef(roomState); // 让完全隔离的 onresult 取到最新状态
-  const [restartMic, setRestartMic] = useState(0); // 强制重启 Mic 的心跳针
+  const roomStateRef = useRef(roomState);
+  const [restartMic, setRestartMic] = useState(0); 
+
+  // 打字机状态
+  const [displayedText, setDisplayedText] = useState('');
 
   useEffect(() => { roomStateRef.current = roomState; }, [roomState]);
 
+  // 使得打字机动画仅在 revealedVoiceText 变更时受控追加
+  useEffect(() => {
+    if (!revealedVoiceText) {
+      setDisplayedText('');
+      return;
+    }
+    if (displayedText.length < revealedVoiceText.length) {
+      const timer = setTimeout(() => {
+        setDisplayedText(revealedVoiceText.slice(0, displayedText.length + 1));
+      }, 40); // 40ms/char 的打字速度，优雅且不过快
+      return () => clearTimeout(timer);
+    }
+  }, [revealedVoiceText, displayedText]);
+
   // 稳定化不稳定回调，防止由父组件渲染引发的不必要 Effect 清除
   const onSendRef = useRef(onSend);
-  const onInterruptRef = useRef(onInterrupt);
   useEffect(() => {
     onSendRef.current = onSend;
-    onInterruptRef.current = onInterrupt;
-  }, [onSend, onInterrupt]);
+  }, [onSend]);
 
   // ─── 语音识别引擎初始化 ──────────────────────────────────
   const createRecognition = useCallback(() => {
@@ -55,14 +70,7 @@ export default function VoiceRoom({
       }
       if (final) {
         setTranscript(final);
-        
-        // 核心：如果是回话状态，用户突然说话 → 判定为打断！
-        if (roomStateRef.current === 'SPEAKING') {
-           if (onInterruptRef.current) onInterruptRef.current(final);
-        } else {
-           onSendRef.current(final);
-        }
-        
+        onSendRef.current(final);
         setRoomState('PROCESSING');
         isStartedRef.current = false;
       } else {
@@ -127,8 +135,8 @@ export default function VoiceRoom({
   useEffect(() => {
     let timeoutId;
 
-    // 当系统在听，亦或者当系统在说话（允许被打断双工模式）时，都要开启麦克风！
-    if (roomState === 'LISTENING' || roomState === 'SPEAKING') {
+    // 回退单工模式：仅在纯聆听期开启麦克风，避免强行占用通道导致移动端系统的喇叭被静音
+    if (roomState === 'LISTENING') {
       const recognition = createRecognition();
       if (!recognition) {
         setErrorMsg('当前浏览器不支持语音识别，请使用 Safari 或 Chrome');
@@ -137,21 +145,20 @@ export default function VoiceRoom({
         return;
       }
       if (!isStartedRef.current) {
-        // SPEAKING 时抢断缓冲短（立刻听），LISTENING 时重设缓冲长（防抢资源）
+        // 缩短至 50ms 启动：保留浏览器的 User Gesture 生命期，防止彻底失去录音权限
         timeoutId = setTimeout(() => {
           try {
             recognitionRef.current = recognition;
             recognition.start();
             isStartedRef.current = true;
-            // 只有进入纯监听期时，我们清空原本遗留的字迹
-            if (roomState === 'LISTENING') setTranscript('');
+            setTranscript('');
           } catch (e) {
             console.error('STT start error:', e);
           }
-        }, roomState === 'SPEAKING' ? 50 : 800);
+        }, 50);
       }
     } else {
-      // 只有 PROCESSING（也就是网络死等期间）以及 ERROR 期间：立即彻底停止录音
+      // 正在输出声音或者网络死等期间：立即彻底停止录音释放音频管道
       if (recognitionRef.current && isStartedRef.current) {
         try { recognitionRef.current.abort(); } catch (_) {}
         isStartedRef.current = false;
@@ -164,7 +171,7 @@ export default function VoiceRoom({
         try { recognitionRef.current.abort(); } catch (_) {}
       }
     };
-  }, [roomState, createRecognition]);
+  }, [roomState, restartMic, createRecognition]);
 
   // 清理 retry timer
   useEffect(() => () => clearTimeout(retryTimerRef.current), []);
@@ -298,7 +305,7 @@ export default function VoiceRoom({
             >
               <div className="bg-black/35 rounded-3xl p-6 md:p-8 border border-white/10 backdrop-blur-xl max-h-[45vh] overflow-y-auto shadow-2xl">
                 <p className="text-white text-lg md:text-xl leading-relaxed tracking-wide">
-                  {revealedVoiceText || (
+                  {displayedText || (
                     roomState === 'PROCESSING'
                       ? <span className="text-white/40 animate-pulse">正在提取思绪...</span>
                       : null
