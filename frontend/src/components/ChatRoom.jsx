@@ -9,6 +9,7 @@ import VoiceRoom from './VoiceRoom';
 
 // 将 streaming 状态抽离到模块级别，使其在组件重渲染时持久存在
 let globalStreamingMsgId = null;
+let isFetchingTts = false;
 
 const APP_VERSION = 'v2.5.0';
 
@@ -22,7 +23,7 @@ export default function ChatRoom({ token, onLogout }) {
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isVoiceRoomOpen, setIsVoiceRoomOpen] = useState(false);
-  
+
   // 用于向 VoiceRoom 精确同步 AI 的完整工作状态（包括在排队、在下载、在播放）
   const [pendingTtsCount, setPendingTtsCount] = useState(0);
   const [audioQueueLength, setAudioQueueLength] = useState(0);
@@ -43,6 +44,7 @@ export default function ChatRoom({ token, onLogout }) {
   const ttsRateRef = useRef("+0%");
   const ttsEnabledRef = useRef(true);
   const isAudioPlayingRef = useRef(false);
+  const isStreamingRef = useRef(false);  // 流式传输期间禁止 TTS 抢占隧道
 
   const handleRateChange = (rate) => {
     setTtsRate(rate);
@@ -73,6 +75,22 @@ export default function ChatRoom({ token, onLogout }) {
 
   useEffect(() => {
     fetchSessions();
+    
+    // 组件卸载时彻底清理音频资源，防止内存泄漏和“幽灵声音”
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        if (audioRef.current.src && audioRef.current.src.startsWith('blob:')) {
+          URL.revokeObjectURL(audioRef.current.src);
+        }
+      }
+      audioQueueRef.current.forEach(task => {
+        if (task.url) URL.revokeObjectURL(task.url);
+      });
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -158,7 +176,7 @@ export default function ChatRoom({ token, onLogout }) {
     const audio = audioRef.current;
     if (audio && audio.paused && !audio.src.includes('data:audio')) {
       // 播放一段极短的静音或简单载入，告诉系统“我要放音了”
-      audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"; 
+      audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
       audio.play().then(() => {
         audio.pause();
         audio.src = "";
@@ -169,7 +187,7 @@ export default function ChatRoom({ token, onLogout }) {
 
   const handleSend = async (text) => {
     if (!text.trim() || loadingRef.current) return;
-    
+
     // 触发解锁（兼容移动端）
     unlockAudio();
 
@@ -185,6 +203,15 @@ export default function ChatRoom({ token, onLogout }) {
 
     setMessagesAndRef(prev => [...prev, userMsg, assistantMsg]);
     setLoadingAndRef(true);
+
+    // 清空上一轮的残留队列，防止上一轮未完成的 TTS 抓取干扰这一轮的 Cpolar 隧道流量
+    audioQueueRef.current = [];
+    setAudioQueueLength(0);
+    setPendingTtsCount(0);
+    sentenceBufferRef.current = "";
+
+    // ★ 标记流式传输中：禁止 TTS 请求去争抢 Cpolar 隧道
+    isStreamingRef.current = true;
 
     // 创建可取消的请求
     abortControllerRef.current = new AbortController();
@@ -214,8 +241,8 @@ export default function ChatRoom({ token, onLogout }) {
             // 最后如果还有剩下的没停顿的词，也抛进队列
             const remaining = sentenceBufferRef.current.trim();
             if (remaining && ttsEnabledRef.current) {
-               pushToAudioQueue(remaining);
-               sentenceBufferRef.current = "";
+              pushToAudioQueue(remaining);
+              sentenceBufferRef.current = "";
             }
             break;
           }
@@ -238,14 +265,14 @@ export default function ChatRoom({ token, onLogout }) {
                       : msg
                   )
                 );
-                
+
                 // 语音断句缓存拼接
                 if (ttsEnabledRef.current) {
                   sentenceBufferRef.current += data.chunk;
                   // 用正则寻找最近的标点符号截断
                   let match;
-                  // 细粒度拦截：加入中文逗号，顿号，英文逗号，确保长句子即使不结束也立刻被分段下发TTS
-                  while ((match = sentenceBufferRef.current.match(/([。！？；，、.!?,\n]+)/))) {
+                  // 细粒度拦截：移除逗号、顿号分割，仅使用完整句号断句，防止 TTS 并发请求海啸压垮 Cpolar 代理
+                  while ((match = sentenceBufferRef.current.match(/([。！？.!?\n]+)/))) {
                     const splitIndex = match.index + match[0].length;
                     const sentence = sentenceBufferRef.current.slice(0, splitIndex);
                     sentenceBufferRef.current = sentenceBufferRef.current.slice(splitIndex);
@@ -263,8 +290,60 @@ export default function ChatRoom({ token, onLogout }) {
       }
     } catch (e) {
       if (e.name !== 'AbortError') console.error(e);
+    } finally {
       setLoadingAndRef(false);
       globalStreamingMsgId = null;
+      // ★ 释放锁并启动排队的 TTS 下载
+      isStreamingRef.current = false;
+      processTtsQueue();
+    }
+  };
+
+  const processTtsQueue = async () => {
+    // ★ 流式传输期间、正在抓取期间、或者队列为空，则不继续下载
+    if (isStreamingRef.current || isFetchingTts) return;
+
+    const taskIndex = audioQueueRef.current.findIndex(t => !t.ready && !t.fetching && !t.failed);
+    if (taskIndex === -1) return;
+
+    const task = audioQueueRef.current[taskIndex];
+    task.fetching = true;
+    isFetchingTts = true;
+
+    try {
+      const encodedText = encodeURIComponent(task.text);
+      const rate = ttsRateRef.current;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 18000); // 18s 超时熔断
+
+      const res = await fetch(`${API_BASE}/tts?text=${encodedText}&rate=${encodeURIComponent(rate)}`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const blob = await res.blob();
+        task.url = URL.createObjectURL(blob);
+      } else {
+        task.failed = true;
+      }
+    } catch (e) {
+      console.error("Prefetch TTS Error:", e);
+      task.failed = true;
+    } finally {
+      task.ready = true;
+      task.fetching = false;
+      isFetchingTts = false;
+      setPendingTtsCount(prev => Math.max(0, prev - 1));
+
+      // 任何管线准备好时，尝试向后步进（如果喇叭正好空闲着）
+      if (!isAudioPlayingRef.current) {
+        playNextAudio();
+      }
+
+      // 继续处理队列下一个任务
+      processTtsQueue();
     }
   };
 
@@ -274,36 +353,15 @@ export default function ChatRoom({ token, onLogout }) {
     if (!text) return;
 
     // 同步把原始文本直接变成一个有完整生命周期的 Task（占位符）
-    const task = { text, url: null, ready: false, failed: false };
+    const task = { text, url: null, ready: false, failed: false, fetching: false };
     audioQueueRef.current.push(task);
     setAudioQueueLength(prev => prev + 1);
     setPendingTtsCount(prev => prev + 1);
 
-    // 并发发起离线生成请求，但不改变数组结构中的强制排序
-    (async () => {
-      try {
-        const encodedText = encodeURIComponent(text);
-        const rate = ttsRateRef.current;
-        const res = await fetch(`${API_BASE}/tts?text=${encodedText}&rate=${encodeURIComponent(rate)}`);
-        if (res.ok) {
-          const blob = await res.blob();
-          task.url = URL.createObjectURL(blob);
-        } else {
-          task.failed = true;
-        }
-      } catch (e) {
-        console.error("Prefetch TTS Error:", e);
-        task.failed = true;
-      } finally {
-        task.ready = true;
-        setPendingTtsCount(prev => Math.max(0, prev - 1));
-        
-        // 任何管线准备好时，尝试向后步进（如果喇叭正好空闲着）
-        if (!isAudioPlayingRef.current) {
-          playNextAudio();
-        }
-      }
-    })();
+    // 仅在非流式传输期间触发下载；流式期间只排队不下载，避免与 /chat 争抢 Cpolar 隧道
+    if (!isStreamingRef.current) {
+      processTtsQueue();
+    }
   };
 
   const playNextAudio = () => {
@@ -393,8 +451,8 @@ export default function ChatRoom({ token, onLogout }) {
       audioQueueRef.current = [];
       sentenceBufferRef.current = "";
       if (audioRef.current) {
-         audioRef.current.pause();
-         audioRef.current.src = "";
+        audioRef.current.pause();
+        audioRef.current.src = "";
       }
       isAudioPlayingRef.current = false;
       setIsAudioPlaying(false);
@@ -410,7 +468,7 @@ export default function ChatRoom({ token, onLogout }) {
       className="w-full flex-1 min-h-0 flex overflow-hidden relative z-10 bg-white"
     >
       <audio ref={audioRef} onEnded={playNextAudio} className="hidden" />
-      
+
       {/* Sidebar Content Fragment */}
       {(() => {
         const SidebarContent = (
@@ -436,11 +494,10 @@ export default function ChatRoom({ token, onLogout }) {
                   <button
                     onClick={() => { handleSessionClick(session.session_id); setIsSidebarOpen(false); }}
                     disabled={loading}
-                    className={`flex-1 text-left flex items-center gap-3 px-3 py-2.5 rounded-full transition-colors min-w-0 ${
-                      currentSessionId === session.session_id
-                        ? 'bg-[#D3E3FD] text-[#041E49] font-medium'
-                        : loading ? 'text-[#444746] opacity-40 cursor-not-allowed' : 'text-[#444746] hover:bg-black/5'
-                    }`}
+                    className={`flex-1 text-left flex items-center gap-3 px-3 py-2.5 rounded-full transition-colors min-w-0 ${currentSessionId === session.session_id
+                      ? 'bg-[#D3E3FD] text-[#041E49] font-medium'
+                      : loading ? 'text-[#444746] opacity-40 cursor-not-allowed' : 'text-[#444746] hover:bg-black/5'
+                      }`}
                   >
                     <MessageSquare className="w-[16px] h-[16px] flex-shrink-0 opacity-70" />
                     <span className="text-[13px] truncate flex-1">{session.title}</span>
@@ -477,24 +534,24 @@ export default function ChatRoom({ token, onLogout }) {
             <AnimatePresence>
               {isSidebarOpen && (
                 <div className="fixed inset-0 z-50 flex md:hidden">
-                  <motion.div 
-                    initial={{ opacity: 0 }} 
-                    animate={{ opacity: 1 }} 
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
                     className="absolute inset-0 bg-black/40 backdrop-blur-sm"
                     onClick={() => setIsSidebarOpen(false)}
                   />
                   <motion.div
-                    initial={{ x: "-100%" }} 
-                    animate={{ x: 0 }} 
-                    exit={{ x: "-100%" }} 
+                    initial={{ x: "-100%" }}
+                    animate={{ x: 0 }}
+                    exit={{ x: "-100%" }}
                     transition={{ type: "spring", bounce: 0, duration: 0.3 }}
                     className="relative w-72 max-w-[80vw] bg-[#F0F4F9] h-full flex flex-col shadow-2xl overflow-hidden"
                     style={{ paddingTop: 'calc(1rem + var(--sat))', paddingBottom: 'calc(1rem + var(--sab))' }}
                   >
                     <div className="absolute top-4 right-4 z-10 mt-[var(--sat)]">
-                       <button onClick={() => setIsSidebarOpen(false)} className="p-2 bg-white rounded-full text-gray-500 shadow-sm"><X className="w-5 h-5"/></button>
+                      <button onClick={() => setIsSidebarOpen(false)} className="p-2 bg-white rounded-full text-gray-500 shadow-sm"><X className="w-5 h-5" /></button>
                     </div>
                     {SidebarContent}
                   </motion.div>
@@ -509,7 +566,7 @@ export default function ChatRoom({ token, onLogout }) {
       <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
         <div className="flex justify-between items-center px-4 md:px-6 py-4 bg-white/95 backdrop-blur-xl border-b border-[#F0F4F9] sticky top-0 z-20" style={{ paddingTop: 'calc(1rem + var(--sat))' }}>
           <div className="flex items-center gap-2">
-            <button 
+            <button
               className="md:hidden p-2 -ml-2 text-[#444746] hover:bg-black/5 rounded-full transition-colors"
               onClick={() => setIsSidebarOpen(true)}
             >
@@ -522,13 +579,13 @@ export default function ChatRoom({ token, onLogout }) {
           <div className="flex items-center gap-2 md:gap-3">
             {loading && (
               <div className="hidden sm:flex items-center gap-2 text-[#1A73E8] text-[13px] animate-pulse font-medium">
-                <span className="inline-block w-2 h-2 rounded-full bg-[#1A73E8] animate-bounce" style={{animationDelay:'0ms'}}></span>
-                <span className="inline-block w-2 h-2 rounded-full bg-[#9C27B0] animate-bounce" style={{animationDelay:'150ms'}}></span>
-                <span className="inline-block w-2 h-2 rounded-full bg-[#E91E63] animate-bounce" style={{animationDelay:'300ms'}}></span>
+                <span className="inline-block w-2 h-2 rounded-full bg-[#1A73E8] animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                <span className="inline-block w-2 h-2 rounded-full bg-[#9C27B0] animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                <span className="inline-block w-2 h-2 rounded-full bg-[#E91E63] animate-bounce" style={{ animationDelay: '300ms' }}></span>
                 <span className="ml-1">推演中</span>
               </div>
             )}
-            
+
             <button
               onClick={() => {
                 unlockAudio(); // 进入语音室时即刷新音频锁，确保用户手势当下生效
@@ -542,39 +599,39 @@ export default function ChatRoom({ token, onLogout }) {
             </button>
 
             <div className="relative">
-              <button 
+              <button
                 onClick={() => setIsRateMenuOpen(!isRateMenuOpen)}
                 className="w-9 h-9 flex items-center justify-center rounded-full text-[#444746] hover:bg-black/5 transition-colors"
                 title="语速设置"
               >
                 <Settings className="w-[18px] h-[18px]" />
               </button>
-              
+
               <AnimatePresence>
                 {isRateMenuOpen && (
-                  <motion.div 
+                  <motion.div
                     initial={{ opacity: 0, scale: 0.95, y: -10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: -10 }}
                     className="absolute right-0 top-[120%] w-36 bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-gray-100 py-2 z-50"
                   >
                     <button onClick={() => handleRateChange('-20%')} className="w-full text-left px-5 py-2.5 text-[14px] text-[#444746] hover:bg-[#F0F4F9] flex items-center justify-between transition-colors">
-                      沉稳慢速 {ttsRate === '-20%' && <Check className="w-4 h-4 text-[#1A73E8]"/>}
+                      沉稳慢速 {ttsRate === '-20%' && <Check className="w-4 h-4 text-[#1A73E8]" />}
                     </button>
                     <button onClick={() => handleRateChange('+0%')} className="w-full text-left px-5 py-2.5 text-[14px] text-[#444746] hover:bg-[#F0F4F9] flex items-center justify-between transition-colors">
-                      知性原声 {ttsRate === '+0%' && <Check className="w-4 h-4 text-[#1A73E8]"/>}
+                      知性原声 {ttsRate === '+0%' && <Check className="w-4 h-4 text-[#1A73E8]" />}
                     </button>
                     <button onClick={() => handleRateChange('+20%')} className="w-full text-left px-5 py-2.5 text-[14px] text-[#444746] hover:bg-[#F0F4F9] flex items-center justify-between transition-colors">
-                      思维快语 {ttsRate === '+20%' && <Check className="w-4 h-4 text-[#1A73E8]"/>}
+                      思维快语 {ttsRate === '+20%' && <Check className="w-4 h-4 text-[#1A73E8]" />}
                     </button>
                   </motion.div>
                 )}
               </AnimatePresence>
             </div>
 
-            <VoiceToggle 
-              enabled={ttsEnabled} 
-              onToggle={handleToggleTts} 
+            <VoiceToggle
+              enabled={ttsEnabled}
+              onToggle={handleToggleTts}
               isPlaying={isAudioPlaying}
               onTogglePlayback={onTogglePlayback}
               hasAudio={true}
@@ -619,18 +676,17 @@ export default function ChatRoom({ token, onLogout }) {
               style={{ minHeight: '52px', maxHeight: '200px' }}
             />
             <div className="flex items-center gap-1 pb-1.5 pr-1.5">
-              <VoiceControl 
-                onResult={(text) => handleSend(text)} 
+              <VoiceControl
+                onResult={(text) => handleSend(text)}
                 onUnlock={unlockAudio}
               />
               <button
                 onClick={() => { handleSend(textInput); setTextInput(''); }}
                 disabled={!textInput.trim() || loading}
-                className={`w-11 h-11 flex items-center justify-center rounded-full transition-all duration-200 ${
-                  textInput.trim() && !loading
-                    ? 'bg-[#1A73E8] text-white hover:bg-[#1557B0] hover:shadow-md'
-                    : 'bg-[#E1E5EA] text-white opacity-40 cursor-not-allowed'
-                }`}
+                className={`w-11 h-11 flex items-center justify-center rounded-full transition-all duration-200 ${textInput.trim() && !loading
+                  ? 'bg-[#1A73E8] text-white hover:bg-[#1557B0] hover:shadow-md'
+                  : 'bg-[#E1E5EA] text-white opacity-40 cursor-not-allowed'
+                  }`}
               >
                 <ArrowUp className="w-[18px] h-[18px] stroke-[2.5]" />
               </button>
@@ -644,7 +700,7 @@ export default function ChatRoom({ token, onLogout }) {
 
       <AnimatePresence>
         {isVoiceRoomOpen && (
-          <VoiceRoom 
+          <VoiceRoom
             isThinking={loading}
             isAiActive={loading || isAudioPlaying || audioQueueLength > 0 || pendingTtsCount > 0}
             revealedVoiceText={revealedVoiceText}
@@ -655,21 +711,21 @@ export default function ChatRoom({ token, onLogout }) {
               handleSend(text);
             }}
             onInterrupt={(text) => {
-               // 打断机制：1. 立刻掐断当前 AI 废话喇叭；2. 终止大模型生成；3. 将用户插话发给后台开启新周天
-               handleStopAudio();
-               if (abortControllerRef.current) abortControllerRef.current.abort();
-               setRevealedVoiceText('');
-               if (!ttsEnabled) { setTtsEnabled(true); ttsEnabledRef.current = true; }
-               handleSend(text);
+              // 打断机制：1. 立刻掐断当前 AI 废话喇叭；2. 终止大模型生成；3. 将用户插话发给后台开启新周天
+              handleStopAudio();
+              if (abortControllerRef.current) abortControllerRef.current.abort();
+              setRevealedVoiceText('');
+              if (!ttsEnabled) { setTtsEnabled(true); ttsEnabledRef.current = true; }
+              handleSend(text);
             }}
             onClose={(interruptOnly) => {
               if (interruptOnly === true) {
-                 handleStopAudio();
-                 if (abortControllerRef.current) abortControllerRef.current.abort();
+                handleStopAudio();
+                if (abortControllerRef.current) abortControllerRef.current.abort();
               } else {
-                 setIsVoiceRoomOpen(false);
-                 handleStopAudio();
-                 if (abortControllerRef.current) abortControllerRef.current.abort();
+                setIsVoiceRoomOpen(false);
+                handleStopAudio();
+                if (abortControllerRef.current) abortControllerRef.current.abort();
               }
             }}
           />

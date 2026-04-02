@@ -7,6 +7,8 @@ export default function VoiceControl({ onResult, onUnlock }) {
   const [error, setError] = useState(null);
   const recognitionRef = useRef(null);
   const isStartedRef = useRef(false);
+  const silenceTimerRef = useRef(null);
+  const cumulativeTranscriptRef = useRef('');
 
   // 每次录音都创建新的实例，避免状态污染
   const createRecognition = useCallback(() => {
@@ -14,18 +16,38 @@ export default function VoiceControl({ onResult, onUnlock }) {
     if (!SpeechRecognition) return null;
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;      // 一次说完就自动停
-    recognition.interimResults = false;  // 只要最终结果
+    recognition.continuous = true;       // 改为连续识别
+    recognition.interimResults = true;   // 需要中间结果来重置计时器
     recognition.lang = 'zh-CN';
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript?.trim();
-      if (transcript) {
-        onResult(transcript);
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
       }
-      setIsRecording(false);
-      isStartedRef.current = false;
+
+      if (final) cumulativeTranscriptRef.current += final + ' ';
+      
+      const currentFullText = cumulativeTranscriptRef.current + interim;
+
+      clearTimeout(silenceTimerRef.current);
+      if (currentFullText.trim()) {
+        silenceTimerRef.current = setTimeout(() => {
+          const finalResult = cumulativeTranscriptRef.current + interim;
+          if (finalResult.trim()) {
+            onResult(finalResult.trim());
+          }
+          setIsRecording(false);
+          isStartedRef.current = false;
+          try { recognitionRef.current.abort(); } catch (_) {}
+        }, 1500);
+      }
     };
 
     recognition.onerror = (event) => {
@@ -68,13 +90,19 @@ export default function VoiceControl({ onResult, onUnlock }) {
 
     if (isRecording && recognitionRef.current && isStartedRef.current) {
       // 已经在录音，停止它
+      clearTimeout(silenceTimerRef.current);
       try {
         recognitionRef.current.stop();
-      } catch (_) {}
+        const finalResult = cumulativeTranscriptRef.current.trim();
+        if (finalResult) onResult(finalResult);
+      } catch (_) { }
+      setIsRecording(false);
+      isStartedRef.current = false;
       return;
     }
 
     // 开始新的录音
+    cumulativeTranscriptRef.current = '';
     try {
       const recognition = createRecognition();
       if (!recognition) return;
@@ -91,8 +119,9 @@ export default function VoiceControl({ onResult, onUnlock }) {
   // 组件卸载时清理
   useEffect(() => {
     return () => {
+      clearTimeout(silenceTimerRef.current);
       if (recognitionRef.current && isStartedRef.current) {
-        try { recognitionRef.current.abort(); } catch (_) {}
+        try { recognitionRef.current.abort(); } catch (_) { }
       }
     };
   }, []);
@@ -151,11 +180,10 @@ export default function VoiceControl({ onResult, onUnlock }) {
       <button
         onClick={handleToggle}
         onContextMenu={(e) => e.preventDefault()}
-        className={`relative z-10 w-full h-full rounded-full flex items-center justify-center transition-all duration-200 select-none ${
-          isRecording
+        className={`relative z-10 w-full h-full rounded-full flex items-center justify-center transition-all duration-200 select-none ${isRecording
             ? 'bg-red-500 text-white shadow-lg scale-110'
             : 'bg-transparent text-[#444746] hover:bg-black/5'
-        }`}
+          }`}
         title={isRecording ? '点击停止录音' : '点击开始语音输入'}
       >
         <AnimatePresence mode="wait">

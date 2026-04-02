@@ -2,13 +2,13 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Mic, MicOff, AlertCircle, RotateCcw } from 'lucide-react';
 
-export default function VoiceRoom({ 
+export default function VoiceRoom({
   isThinking,
   isAiActive,
   revealedVoiceText,  // 与音频严格同步的已播报文字
-  onSend, 
+  onSend,
   onInterrupt,        // 用户主动打断时的回调
-  onClose 
+  onClose
 }) {
   // 核心状态机
   const [roomState, setRoomState] = useState('INIT');
@@ -20,8 +20,11 @@ export default function VoiceRoom({
   const isStartedRef = useRef(false);
   const retryTimerRef = useRef(null);
   const roomStateRef = useRef(roomState);
-  const [restartMic, setRestartMic] = useState(0); 
+  const [restartMic, setRestartMic] = useState(0);
 
+  // 防抖累加容器
+  const silenceTimerRef = useRef(null);
+  const cumulativeTranscriptRef = useRef('');
   // 打字机状态
   const [displayedText, setDisplayedText] = useState('');
 
@@ -53,7 +56,7 @@ export default function VoiceRoom({
     if (!SpeechRecognition) return null;
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'zh-CN';
     recognition.maxAlternatives = 1;
@@ -68,13 +71,32 @@ export default function VoiceRoom({
           interim += event.results[i][0].transcript;
         }
       }
+      
       if (final) {
-        setTranscript(final);
-        onSendRef.current(final);
-        setRoomState('PROCESSING');
-        isStartedRef.current = false;
-      } else {
-        setTranscript(interim);
+        cumulativeTranscriptRef.current += final + ' ';
+      }
+      
+      const currentFullText = cumulativeTranscriptRef.current + interim;
+      if (currentFullText.trim()) {
+        setTranscript(currentFullText);
+      }
+      
+      // 1.5s 静默防抖
+      clearTimeout(silenceTimerRef.current);
+      if (currentFullText.trim()) {
+        silenceTimerRef.current = setTimeout(() => {
+           // 只在还有待发送内容时触发
+           if (roomStateRef.current === 'LISTENING') {
+             const stringToSend = cumulativeTranscriptRef.current + interim;
+             const finalStr = stringToSend.trim();
+             if (finalStr) {
+               onSendRef.current(finalStr);
+               setRoomState('PROCESSING');
+               cumulativeTranscriptRef.current = '';
+               try { recognitionRef.current.abort(); } catch (_) {}
+             }
+           }
+        }, 1500);
       }
     };
 
@@ -109,7 +131,7 @@ export default function VoiceRoom({
       isStartedRef.current = false;
       // 硬件层真正断开后，如果我们仍在监听期内（即使是AI正在说话的监听期），强制心跳重启
       if (roomStateRef.current === 'LISTENING' || roomStateRef.current === 'SPEAKING') {
-         setRestartMic(r => r + 1);
+        setRestartMic(r => r + 1);
       }
     };
 
@@ -124,6 +146,7 @@ export default function VoiceRoom({
       setRoomState(prev => {
         if (prev === 'SPEAKING' || prev === 'PROCESSING') {
           setTranscript('');
+          cumulativeTranscriptRef.current = '';
           return 'LISTENING';
         }
         return prev;
@@ -160,7 +183,7 @@ export default function VoiceRoom({
     } else {
       // 正在输出声音或者网络死等期间：立即彻底停止录音释放音频管道
       if (recognitionRef.current && isStartedRef.current) {
-        try { recognitionRef.current.abort(); } catch (_) {}
+        try { recognitionRef.current.abort(); } catch (_) { }
         isStartedRef.current = false;
       }
     }
@@ -168,7 +191,7 @@ export default function VoiceRoom({
     return () => {
       clearTimeout(timeoutId);
       if (recognitionRef.current && isStartedRef.current) {
-        try { recognitionRef.current.abort(); } catch (_) {}
+        try { recognitionRef.current.abort(); } catch (_) { }
       }
     };
   }, [roomState, restartMic, createRecognition]);
@@ -182,31 +205,31 @@ export default function VoiceRoom({
   // ─── 视觉辅助函数 ─────────────────────────────────────────
   const getOrbColor = () => {
     switch (roomState) {
-      case 'LISTENING':   return '#3B82F6';   // blue
-      case 'PROCESSING':  return '#A855F7';   // purple
-      case 'SPEAKING':    return '#10B981';   // emerald
-      case 'ERROR':       return '#EF4444';   // red
-      default:            return '#6B7280';
+      case 'LISTENING': return '#3B82F6';   // blue
+      case 'PROCESSING': return '#A855F7';   // purple
+      case 'SPEAKING': return '#10B981';   // emerald
+      case 'ERROR': return '#EF4444';   // red
+      default: return '#6B7280';
     }
   };
 
   const getOrbScale = () => {
     switch (roomState) {
-      case 'LISTENING':  return [1, 1.08, 1];
+      case 'LISTENING': return [1, 1.08, 1];
       case 'PROCESSING': return [1, 1.18, 0.95, 1.1, 1];
-      case 'SPEAKING':   return [1, 1.25, 0.9, 1.15, 1];
-      case 'ERROR':      return 0.8;
-      default:           return 1;
+      case 'SPEAKING': return [1, 1.25, 0.9, 1.15, 1];
+      case 'ERROR': return 0.8;
+      default: return 1;
     }
   };
 
   const getStatusText = () => {
     switch (roomState) {
-      case 'LISTENING':   return '在听...';
-      case 'PROCESSING':  return '思考中...';
-      case 'SPEAKING':    return '回答中...';
-      case 'ERROR':       return errorType === 'retriable' ? '重试中...' : '出现错误';
-      default:            return '';
+      case 'LISTENING': return '在听...';
+      case 'PROCESSING': return '思考中...';
+      case 'SPEAKING': return '回答中...';
+      case 'ERROR': return errorType === 'retriable' ? '重试中...' : '出现错误';
+      default: return '';
     }
   };
 
