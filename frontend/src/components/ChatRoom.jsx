@@ -75,7 +75,7 @@ export default function ChatRoom({ token, onLogout }) {
 
   useEffect(() => {
     fetchSessions();
-    
+
     // 组件卸载时彻底清理音频资源，防止内存泄漏和“幽灵声音”
     return () => {
       if (audioRef.current) {
@@ -418,6 +418,7 @@ export default function ChatRoom({ token, onLogout }) {
     }
     audioQueueRef.current = [];
     setAudioQueueLength(0);
+    setPendingTtsCount(0);
     sentenceBufferRef.current = "";
     isAudioPlayingRef.current = false;
     setIsAudioPlaying(false);
